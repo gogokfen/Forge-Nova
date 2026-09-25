@@ -1,0 +1,25 @@
+# This repository's root is a Forge install folder; only Forge Nova's own files are tracked.
+# Forge itself (jars, res, docs, launchers) comes from https://github.com/Card-Forge/forge.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/forge-nova.cmd
+!/nova/
+!/.claude/
+/.claude/*
+!/.claude/launch.json
+
+# Build output (nova\tools\build.cmd; forge-nova.cmd runs it when nova\lib is missing)
+/nova/build/
+/nova/lib/
+/nova/bench/classes/
+
+# Created by running Nova or the benchmarks
+/nova/cache/
+/nova/logs/
+/nova/bench/results/
+__pycache__/
+
+# Optional cloudflared.exe for the Cloudflare invite link
+/nova/tools/*.exe

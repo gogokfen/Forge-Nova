@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "forge-nova",
+      "runtimeExecutable": "java",
+      "runtimeArgs": [
+        "-Xmx4g", "-XX:+UseZGC", "-XX:+ZGenerational", "-Dfile.encoding=UTF-8",
+        "--add-opens", "java.base/java.util=ALL-UNNAMED",
+        "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+        "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens", "java.base/java.text=ALL-UNNAMED",
+        "--add-opens", "java.desktop/java.awt=ALL-UNNAMED",
+        "-cp", "nova/lib/nova-host.jar;forge-gui-desktop-2.0.15-SNAPSHOT-jar-with-dependencies.jar",
+        "forge.nova.NovaMain", "--no-browser", "--dev", "--port", "7777"
+      ],
+      "port": 7777
+    },
+    {
+      "name": "forge-nova-friend",
+      "runtimeExecutable": "java",
+      "runtimeArgs": [
+        "-Xmx3g", "-XX:+UseZGC", "-XX:+ZGenerational", "-Dfile.encoding=UTF-8",
+        "--add-opens", "java.base/java.util=ALL-UNNAMED",
+        "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+        "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens", "java.base/java.text=ALL-UNNAMED",
+        "--add-opens", "java.desktop/java.awt=ALL-UNNAMED",
+        "-cp", "nova/lib/nova-host.jar;forge-gui-desktop-2.0.15-SNAPSHOT-jar-with-dependencies.jar",
+        "forge.nova.NovaMain", "--no-browser", "--dev", "--port", "7778"
+      ],
+      "port": 7778
+    }
+  ]
+}

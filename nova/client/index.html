@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forge Nova</title>
+  <meta name="description" content="GPU-accelerated client for the Forge MTG rules engine">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 4 58 32 32 60 6 32Z' fill='%23e0a64b'/%3E%3Cpath d='M32 16 46 32 32 48 18 32Z' fill='%230e1116'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <!-- Loading / connection overlay -->
+  <div id="boot" class="boot">
+    <div class="boot-card">
+      <div class="logo"><span class="logo-gem"></span>Forge <b>Nova</b></div>
+      <div id="boot-msg" class="boot-msg">Starting the rules engine…</div>
+      <div class="boot-bar"><div></div></div>
+    </div>
+  </div>
+
+  <!-- Lobby -->
+  <section id="lobby" class="screen hidden"></section>
+
+  <!-- Deck builder -->
+  <section id="builder" class="screen hidden"></section>
+
+  <!-- Online: the room (host and friends) and a friend's join screen -->
+  <section id="room" class="screen hidden"></section>
+  <section id="join" class="screen hidden"></section>
+
+  <!-- Match -->
+  <section id="match" class="screen hidden">
+    <canvas id="gl"></canvas>
+    <canvas id="fx"></canvas>
+    <div id="hud"></div>
+  </section>
+
+  <div id="dialogs"></div>
+  <div id="toasts"></div>
+  <div id="tooltip" class="tooltip hidden"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

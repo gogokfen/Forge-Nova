@@ -1,0 +1,77 @@
+  done patched   seed 101 Atraxa vs Kynaios
+  done original  seed 101 Atraxa vs Kynaios
+  done patched   seed 202 Atraxa vs Kynaios
+  done original  seed 202 Atraxa vs Kynaios
+  done patched   seed 303 Atraxa vs Kynaios
+  done original  seed 303 Atraxa vs Kynaios
+  done original  seed 101 Vazi vs Rocco
+  done patched   seed 101 Vazi vs Rocco
+  done patched   seed 202 Vazi vs Rocco
+  done original  seed 202 Vazi vs Rocco
+  done patched   seed 303 Vazi vs Rocco
+  done original  seed 303 Vazi vs Rocco
+  done original  seed 101 Mirmoldo vs Bananas Akibo
+  done patched   seed 101 Mirmoldo vs Bananas Akibo
+  done patched   seed 202 Mirmoldo vs Bananas Akibo
+  done original  seed 303 Mirmoldo vs Bananas Akibo
+  done patched   seed 303 Mirmoldo vs Bananas Akibo
+  done original  seed 202 Mirmoldo vs Bananas Akibo
+  done patched   seed 101 Elenda and Azor vs Jenson
+  done original  seed 101 Elenda and Azor vs Jenson
+  done patched   seed 303 Elenda and Azor vs Jenson
+  done original  seed 303 Elenda and Azor vs Jenson
+  done patched   seed 202 Elenda and Azor vs Jenson
+  done original  seed 101 Nissa vs Toph
+  done patched   seed 101 Nissa vs Toph
+  done original  seed 202 Elenda and Azor vs Jenson
+  done original  seed 202 Nissa vs Toph
+  done patched   seed 202 Nissa vs Toph
+  done original  seed 303 Nissa vs Toph
+  done patched   seed 303 Nissa vs Toph
+  done patched   seed 101 Isshin vs Glarb
+  done original  seed 101 Isshin vs Glarb
+  done patched   seed 202 Isshin vs Glarb
+  done original  seed 202 Isshin vs Glarb
+  done patched   seed 101 Zidane vs Savra
+  done original  seed 101 Zidane vs Savra
+  done patched   seed 303 Isshin vs Glarb
+  done original  seed 202 Zidane vs Savra
+  done patched   seed 202 Zidane vs Savra
+  done original  seed 303 Isshin vs Glarb
+  done patched   seed 303 Zidane vs Savra
+  done original  seed 303 Zidane vs Savra
+  done original  seed 101 Ulamog vs Serah Farron
+  done patched   seed 101 Ulamog vs Serah Farron
+  done patched   seed 202 Ulamog vs Serah Farron
+  done original  seed 202 Ulamog vs Serah Farron
+  done patched   seed 303 Ulamog vs Serah Farron
+  done original  seed 303 Ulamog vs Serah Farron
+
+game                                                   original    patched  speedup  log
+Atraxa vs Kynaios #101                                    13.2s       8.2s    1.62x  IDENTICAL
+Atraxa vs Kynaios #202                                    20.5s      18.9s    1.09x  IDENTICAL
+Atraxa vs Kynaios #303                                    24.2s      20.8s    1.17x  IDENTICAL
+Vazi vs Rocco #101                                         4.3s       5.0s    0.87x  IDENTICAL
+Vazi vs Rocco #202                                        15.7s      12.9s    1.21x  IDENTICAL
+Vazi vs Rocco #303                                        19.1s      16.7s    1.14x  DIFFERENT
+Mirmoldo vs Bananas Akibo #101                             8.1s       5.3s    1.52x  IDENTICAL
+Mirmoldo vs Bananas Akibo #202                            19.5s      12.4s    1.57x  IDENTICAL
+Mirmoldo vs Bananas Akibo #303                            10.1s       8.7s    1.16x  IDENTICAL
+Elenda and Azor vs Jenson #101                            26.6s      18.8s    1.42x  IDENTICAL
+Elenda and Azor vs Jenson #202                            37.6s      22.2s    1.69x  IDENTICAL
+Elenda and Azor vs Jenson #303                            20.5s      14.3s    1.43x  IDENTICAL
+Nissa vs Toph #101                                        10.3s       7.7s    1.35x  IDENTICAL
+Nissa vs Toph #202                                         5.8s       6.3s    0.92x  IDENTICAL
+Nissa vs Toph #303                                        13.2s      11.8s    1.12x  IDENTICAL
+Isshin vs Glarb #101                                      16.6s      14.5s    1.14x  IDENTICAL
+Isshin vs Glarb #202                                      23.7s      17.5s    1.36x  IDENTICAL
+Isshin vs Glarb #303                                      40.7s      24.4s    1.67x  IDENTICAL
+Zidane vs Savra #101                                       9.9s       7.7s    1.28x  IDENTICAL
+Zidane vs Savra #202                                       6.6s       5.9s    1.11x  IDENTICAL
+Zidane vs Savra #303                                      16.5s      13.4s    1.23x  IDENTICAL
+Ulamog vs Serah Farron #101                               12.0s      10.2s    1.18x  IDENTICAL
+Ulamog vs Serah Farron #202                               10.3s       9.1s    1.13x  IDENTICAL
+Ulamog vs Serah Farron #303                                6.2s       5.4s    1.16x  IDENTICAL
+
+TOTAL game time: original 391.3s, patched 297.9s -> 1.31x faster
+Behaviour preserved in 23/24 games (identical logs, or the original is itself nondeterministic).
