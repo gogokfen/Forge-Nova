@@ -26,8 +26,6 @@ public final class TraitEpoch {
     public static final boolean DISABLED = Boolean.getBoolean("nova.disableCaches");
 
     private static final Set<String> REPORTED = ConcurrentHashMap.newKeySet();
-    public static final AtomicLong HITS = new AtomicLong();
-    public static final AtomicLong MISSES = new AtomicLong();
 
     private TraitEpoch() {
     }
@@ -38,6 +36,20 @@ public final class TraitEpoch {
 
     public static void bumpGlobal() {
         GLOBAL.incrementAndGet();
+    }
+
+    private static final AtomicLong REPLACEMENT_EXTRAS = new AtomicLong(1);
+
+    /**
+     * Changes whenever a zoned card's shield, stun or finality counters change: those counters add replacement
+     * effects to a card without changing its trait epoch (see Card.hasCounterReplacementEffects).
+     */
+    public static long replacementExtras() {
+        return REPLACEMENT_EXTRAS.get();
+    }
+
+    public static void bumpReplacementExtras() {
+        REPLACEMENT_EXTRAS.incrementAndGet();
     }
 
     /** Reports a cache inconsistency once per call site (verification mode only). */

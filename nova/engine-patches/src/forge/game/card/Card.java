@@ -375,7 +375,17 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
 
    public final void bumpTraitEpoch() {
       TRAIT_EPOCH.incrementAndGet(this);
-      TraitEpoch.bumpGlobal();
+      // Forge Nova: the global epoch keys indexes built from zone contents (TraitEpoch.global() users). A card
+      // without a zone (an LKI copy, a card being built) is in no zone list: Zone.add/setCards give a card its
+      // zone before listing it (and bump), and nothing clears a card's zone. So only zoned cards need to bump it;
+      // this keeps the indexes valid while Forge makes last-known-information copies of whole battlefields.
+      if (this.currentZone != null || TraitEpoch.DISABLED) {
+         TraitEpoch.bumpGlobal();
+      }
+      final Zone novaZone = this.currentZone;
+      if (novaZone != null) {
+         novaZone.novaBumpVersion(); // Forge Nova: NovaStaticVisit's per-zone summaries
+      }
    }
 
    public Card(int id0, Game game0) {
@@ -671,6 +681,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    public CardState getFaceDownState() {
       if (!this.states.containsKey(CardStateName.FaceDown)) {
          this.states.put(CardStateName.FaceDown, CardUtil.getFaceDownCharacteristic(this));
+         this.bumpTraitEpoch(); // Forge Nova: the set of states feeds getAllSpellAbilities()
       }
 
       return (CardState)this.states.get(CardStateName.FaceDown);
@@ -680,6 +691,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       this.currentState = CardUtil.getFaceDownCharacteristic(this, CardStateName.Original);
       this.bumpTraitEpoch();
       this.states.put(CardStateName.Original, this.currentState);
+      this.bumpTraitEpoch(); // Forge Nova: after the change too (the set of states feeds getAllSpellAbilities())
    }
 
    public boolean changeToState(CardStateName state) {
@@ -758,10 +770,12 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    public void setStates(Map<CardStateName, CardState> map) {
       this.states.clear();
       this.states.putAll(map);
+      this.bumpTraitEpoch(); // Forge Nova: the set of states feeds getAllSpellAbilities()
    }
 
    public final void addAlternateState(CardStateName state, boolean updateView) {
       this.states.put(state, new CardState(this, state));
+      this.bumpTraitEpoch(); // Forge Nova: the set of states feeds getAllSpellAbilities()
       if (updateView) {
          this.updateStateForView();
       }
@@ -770,6 +784,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
 
    public void clearStates(CardStateName state, boolean updateView) {
       if (this.states.remove(state) != null) {
+         this.bumpTraitEpoch(); // Forge Nova: the set of states feeds getAllSpellAbilities()
          if (state == this.currentStateName) {
             this.currentStateName = CardStateName.Original;
             this.bumpTraitEpoch();
@@ -1128,6 +1143,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
 
    public void addChangedName(String name0, boolean addNonLegendaryCreatureNames, long timestamp, long staticId) {
       this.changedCardNames.put(timestamp, staticId, new CardChangedName(name0, addNonLegendaryCreatureNames));
+      this.bumpTraitEpoch(); // Forge Nova: names key NovaStaticSourceIndex.namedCards
       this.updateNameforView();
    }
 
@@ -1137,6 +1153,9 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
 
    public boolean removeChangedName(long timestamp, long staticId, boolean updateView) {
       boolean changed = this.changedCardNames.remove(timestamp, staticId) != null;
+      if (changed) {
+         this.bumpTraitEpoch(); // Forge Nova: names key NovaStaticSourceIndex.namedCards
+      }
       if (changed && updateView) {
          this.updateNameforView();
       }
@@ -1147,6 +1166,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    public boolean clearChangedName() {
       boolean changed = !this.changedCardNames.isEmpty();
       this.changedCardNames.clear();
+      this.bumpTraitEpoch(); // Forge Nova: names key NovaStaticSourceIndex.namedCards
       return changed;
    }
 
@@ -1937,6 +1957,9 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       return counterType.is(CounterEnumType.DREAM) ? StaticAbilityMaxCounter.maxCounter(this, counterType) : null;
    }
 
+   /** Forge Nova: see addCounterInternal. */
+   private static final int NOVA_PER_COUNTER_EVENTS = 10000;
+
    public void addCounterInternal(CounterType counterType, int n, Player source, boolean fireEvents, GameEntityCounterTable table, Map<AbilityKey, Object> params) {
       int addAmount = n;
       if (n > 0 && this.canReceiveCounters(counterType)) {
@@ -1944,6 +1967,14 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
          Integer max = this.getCounterMax(counterType);
          if (max != null) {
             addAmount = Math.min(n, max - oldValue);
+            if (addAmount <= 0) {
+               return;
+            }
+         }
+
+         // Forge Nova: a counter count stops at the largest int instead of wrapping around to a negative number
+         if ((long)addAmount + oldValue > Integer.MAX_VALUE) {
+            addAmount = Integer.MAX_VALUE - oldValue;
             if (addAmount <= 0) {
                return;
             }
@@ -1972,7 +2003,10 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
                runParams.putAll(params);
             }
 
-            for(int i = 0; i < addAmount; ++i) {
+            // Forge Nova: one "counter added" trigger event per counter, for at most NOVA_PER_COUNTER_EVENTS counters (a
+            // billion counters added at once would otherwise keep the game busy for hours)
+            int perCounter = Math.min(addAmount, NOVA_PER_COUNTER_EVENTS);
+            for(int i = 0; i < perCounter; ++i) {
                runParams.put(AbilityKey.CounterAmount, oldValue + i + 1);
                this.getGame().getTriggerHandler().runTrigger(TriggerType.CounterAdded, AbilityKey.newMap(runParams), false);
             }
@@ -2009,6 +2043,17 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    }
 
    public boolean createCounterStatic(CounterType counterType) {
+      final int novaSize = this.counterTypeKeywordStatic.size();
+      try {
+         return this.createCounterStaticInternal(counterType);
+      } finally {
+         if (this.counterTypeKeywordStatic.size() != novaSize) {
+            this.bumpTraitEpoch(); // Forge Nova: getHiddenStaticAbilities() can include the new static
+         }
+      }
+   }
+
+   private boolean createCounterStaticInternal(CounterType counterType) {
       StaticAbility result;
       if (counterType.is(CounterEnumType.MANABOND)) {
          result = (StaticAbility)this.counterTypeKeywordStatic.computeIfAbsent(counterType, (ct) -> {
@@ -2099,9 +2144,21 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       }
    }
 
+   /** Forge Nova: shield/stun/finality counters add replacement effects (see TraitEpoch.replacementExtras). */
+   @Override
+   public void setCounters(CounterType counterType, Integer num) {
+      super.setCounters(counterType, num);
+      if (this.currentZone != null && (counterType.is(CounterEnumType.SHIELD) || counterType.is(CounterEnumType.STUN) || counterType.is(CounterEnumType.FINALITY))) {
+         TraitEpoch.bumpReplacementExtras();
+      }
+   }
+
    public final void setCounters(Multiset<CounterType> allCounters) {
       boolean changed = this.counters.contains(CounterEnumType.MANABOND) || this.counters.elementSet().stream().anyMatch(CounterType::isKeywordCounter);
       this.counters = allCounters;
+      if (this.currentZone != null) {
+         TraitEpoch.bumpReplacementExtras(); // Forge Nova: any counter may have changed
+      }
       this.view.updateCounters(this);
       if (!this.isLKI()) {
          for(CounterType ct : this.counters.elementSet()) {
@@ -2121,6 +2178,9 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       if (!this.counters.isEmpty()) {
          boolean changed = this.counters.contains(CounterEnumType.MANABOND) || this.counters.elementSet().stream().anyMatch(CounterType::isKeywordCounter);
          this.counters.clear();
+         if (this.currentZone != null) {
+            TraitEpoch.bumpReplacementExtras(); // Forge Nova: any counter may have changed
+         }
          this.view.updateCounters(this);
          if (changed) {
             this.updateKeywords();
@@ -3740,6 +3800,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
 
    public void addStaticCommandList(Object[] objects) {
       this.staticCommandList.add(objects);
+      this.bumpTraitEpoch(); // Forge Nova: GameAction's static scan lists cards with static commands
    }
 
    public List<Object[]> getStaticCommandList() {
@@ -4626,7 +4687,8 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    }
 
    public final int getPowerBonusFromCounters() {
-      return !this.hasCounters() ? 0 : this.getCounters(CounterEnumType.P1P1) + this.getCounters(CounterEnumType.P1P2) + this.getCounters(CounterEnumType.P1P0) - this.getCounters(CounterEnumType.M1M1) + 2 * this.getCounters(CounterEnumType.P2P2) - 2 * this.getCounters(CounterEnumType.M2M1) - 2 * this.getCounters(CounterEnumType.M2M2) - this.getCounters(CounterEnumType.M1M0) + 2 * this.getCounters(CounterEnumType.P2P0);
+      // Forge Nova: summed as long and saturated (NovaMath): huge counter counts no longer wrap around
+      return !this.hasCounters() ? 0 : forge.game.NovaMath.sat((long)this.getCounters(CounterEnumType.P1P1) + this.getCounters(CounterEnumType.P1P2) + this.getCounters(CounterEnumType.P1P0) - this.getCounters(CounterEnumType.M1M1) + 2L * this.getCounters(CounterEnumType.P2P2) - 2L * this.getCounters(CounterEnumType.M2M1) - 2L * this.getCounters(CounterEnumType.M2M2) - this.getCounters(CounterEnumType.M1M0) + 2L * this.getCounters(CounterEnumType.P2P0));
    }
 
    public final StatBreakdown getNetPowerBreakdown() {
@@ -4658,7 +4720,8 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    }
 
    public final int getToughnessBonusFromCounters() {
-      return !this.hasCounters() ? 0 : this.getCounters(CounterEnumType.P1P1) + 2 * this.getCounters(CounterEnumType.P1P2) - this.getCounters(CounterEnumType.M1M1) + this.getCounters(CounterEnumType.P0P1) - 2 * this.getCounters(CounterEnumType.M0M2) + 2 * this.getCounters(CounterEnumType.P2P2) - this.getCounters(CounterEnumType.M0M1) - this.getCounters(CounterEnumType.M2M1) - 2 * this.getCounters(CounterEnumType.M2M2) + 2 * this.getCounters(CounterEnumType.P0P2);
+      // Forge Nova: summed as long and saturated (NovaMath)
+      return !this.hasCounters() ? 0 : forge.game.NovaMath.sat((long)this.getCounters(CounterEnumType.P1P1) + 2L * this.getCounters(CounterEnumType.P1P2) - this.getCounters(CounterEnumType.M1M1) + this.getCounters(CounterEnumType.P0P1) - 2L * this.getCounters(CounterEnumType.M0M2) + 2L * this.getCounters(CounterEnumType.P2P2) - this.getCounters(CounterEnumType.M0M1) - this.getCounters(CounterEnumType.M2M1) - 2L * this.getCounters(CounterEnumType.M2M2) + 2L * this.getCounters(CounterEnumType.P0P2));
    }
 
    public final StatBreakdown getNetToughnessBreakdown() {
@@ -4682,11 +4745,12 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    }
 
    public final int getTempPowerBoost() {
-      return this.boostPT.values().stream().mapToInt(Pair::getLeft).sum();
+      // Forge Nova: a long sum, saturated (power doubled again and again used to wrap around to 0 or below)
+      return forge.game.NovaMath.sat(this.boostPT.values().stream().mapToLong(Pair::getLeft).sum());
    }
 
    public final int getTempToughnessBoost() {
-      return this.boostPT.values().stream().mapToInt(Pair::getRight).sum();
+      return forge.game.NovaMath.sat(this.boostPT.values().stream().mapToLong(Pair::getRight).sum());
    }
 
    public void addPTBoost(int power, int toughness, long timestamp, long staticId) {
@@ -5825,6 +5889,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    public final void setPhasedOut(Player phasedOut0) {
       if (this.phasedOut != phasedOut0) {
          this.phasedOut = phasedOut0;
+         this.bumpTraitEpoch(); // Forge Nova: phased-out cards drop out of getCardsIn() (and the static ability index)
          this.view.updatePhasedOut(this);
       }
    }
@@ -5930,6 +5995,99 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    }
 
    public final boolean isValid(String restriction, Player sourceController, Card source, CardTraitBase spellAbility) {
+      if (TraitEpoch.DISABLED) {
+         return this.isValidOriginal(restriction, sourceController, source, spellAbility);
+      }
+      // Forge Nova: same tests in the same order as isValidOriginal, on a restriction parsed once (NovaRestriction)
+      final NovaRestriction r = NovaRestriction.of(restriction);
+      final boolean testFailed = r.negated;
+      boolean result = !testFailed;
+      evaluate: {
+         if (this.getCurrentStateName() == CardStateName.PreparedSpell && this.isInZone(ZoneType.Exile)) {
+            result = testFailed;
+            break evaluate;
+         }
+         switch (r.kind) {
+            case NovaRestriction.SPELL:
+               if (!this.isSpell()) {
+                  result = testFailed;
+                  break evaluate;
+               }
+               break;
+            case NovaRestriction.PERMANENT:
+               if (!this.isPermanent()) {
+                  result = testFailed;
+                  break evaluate;
+               }
+               break;
+            case NovaRestriction.EFFECT:
+               if (!this.isImmutable()) {
+                  result = testFailed;
+                  break evaluate;
+               }
+               break;
+            case NovaRestriction.EMBLEM:
+               if (!this.isEmblem()) {
+                  result = testFailed;
+                  break evaluate;
+               }
+               break;
+            case NovaRestriction.BOON:
+               if (!this.isBoon()) {
+                  result = testFailed;
+                  break evaluate;
+               }
+               break;
+            case NovaRestriction.ANY:
+               if (!this.isCreature() && !this.isPlaneswalker() && !this.isBattle()) {
+                  result = false;
+                  break evaluate;
+               }
+               break;
+            case NovaRestriction.CARD:
+               if (this.isImmutable()) {
+                  result = testFailed;
+                  break evaluate;
+               }
+               break;
+            default: {
+               // CardType.hasStringType(type), with its type-name lookups done once per restriction
+               final CardTypeView tv = this.getType();
+               final boolean has;
+               if (r.type.isEmpty()) {
+                  has = false;
+               } else if (tv.hasSubtype(r.type)) {
+                  has = true;
+               } else if (r.core != null) {
+                  has = tv.hasType(r.core);
+               } else {
+                  has = r.sup != null && tv.hasSupertype(r.sup);
+               }
+               if (!has) {
+                  result = testFailed;
+                  break evaluate;
+               }
+            }
+         }
+         if (r.props != null) {
+            for (String exR : r.props) {
+               if (!this.hasProperty(exR, sourceController, source, spellAbility)) {
+                  result = testFailed;
+                  break evaluate;
+               }
+            }
+         }
+      }
+      if (TraitEpoch.VERIFY) {
+         boolean fresh = this.isValidOriginal(restriction, sourceController, source, spellAbility);
+         if (fresh != result) {
+            TraitEpoch.mismatch("isValid:" + restriction, this, java.util.Collections.singletonList(result), java.util.Collections.singletonList(fresh));
+         }
+      }
+      return result;
+   }
+
+   private boolean isValidOriginal(String restriction, Player sourceController, Card source, CardTraitBase spellAbility) {
       String[] incR = restriction.split("\\.", 2);
       boolean testFailed = false;
       if (incR[0].startsWith("!")) {
@@ -5988,6 +6146,22 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    }
 
    public boolean hasProperty(String property, Player sourceController, Card source, CardTraitBase spellAbility) {
+      if (!TraitEpoch.DISABLED && this.getGame() != null) {
+         // Forge Nova: common properties answered directly, see NovaProps (derived from CardProperty's chain)
+         final boolean negated = property.startsWith("!");
+         final String prop = negated ? property.substring(1) : property;
+         final int fast = NovaProps.fast(this, prop, sourceController, source, spellAbility);
+         if (fast != NovaProps.UNKNOWN) {
+            if (TraitEpoch.VERIFY) {
+               boolean fresh = CardProperty.cardHasProperty(this, prop, sourceController, source, spellAbility);
+               if (fresh != (fast == 1)) {
+                  TraitEpoch.mismatch("hasProperty:" + prop, this, java.util.Collections.singletonList(fast == 1), java.util.Collections.singletonList(fresh));
+               }
+            }
+            return negated != (fast == 1);
+         }
+         return negated != CardProperty.cardHasProperty(this, prop, sourceController, source, spellAbility);
+      }
       if (property.startsWith("!")) {
          return !CardProperty.cardHasProperty(this, property.substring(1), sourceController, source, spellAbility);
       } else {
@@ -6218,13 +6392,13 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    }
 
    public final int getDamage() {
-      int sum = 0;
+      long sum = 0L; // Forge Nova: long sum, saturated
 
       for(int i : this.damage.values()) {
          sum += i;
       }
 
-      return sum;
+      return forge.game.NovaMath.sat(sum);
    }
 
    public final void setDamage(int damage0) {
@@ -6289,7 +6463,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    public final void addAssignedDamage(int assignedDamage0, Card sourceCard) {
       if (assignedDamage0 > 0) {
          Logger.debug("{} was assigned {} damage by {}", new Object[]{this, assignedDamage0, sourceCard});
-         this.assignedDamageMap.merge(sourceCard, assignedDamage0, Integer::sum);
+         this.assignedDamageMap.merge(sourceCard, assignedDamage0, forge.game.NovaMath::add);
          this.view.updateAssignedDamage(this);
       }
    }
@@ -6302,53 +6476,59 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    }
 
    public final int getTotalAssignedDamage() {
-      int total = 0;
+      long total = 0L; // Forge Nova: long sum, saturated
 
       for(Integer assignedDamage : this.assignedDamageMap.values()) {
          total += assignedDamage;
       }
 
-      return total;
+      return forge.game.NovaMath.sat(total);
    }
 
    public final boolean canDamagePrevented(boolean isCombat) {
       return !StaticAbilityCantPreventDamage.cantPreventDamage(this, isCombat);
    }
 
-   public final int staticReplaceDamage(int damage, Card source, boolean isCombat) {
-      int restDamage = damage;
+   /** Forge Nova: the battlefield card names staticReplaceDamage reacts to. */
+   private static final java.util.Set<String> NOVA_REPLACE_DAMAGE_BF = java.util.Set.of("Sulfuric Vapors", "Pyromancer's Swath", "Furnace of Rath", "Dictate of the Twin Gods", "Gratuitous Violence", "Fire Servant", "Gisela, Blade of Goldnight", "Inquisitor's Flail", "Ghosts of the Innocent", "Benevolent Unicorn", "Divine Presence", "Lashknife Barrier");
 
-      for(Card c : this.getGame().getCardsIn(ZoneType.Battlefield)) {
+   public final int staticReplaceDamage(int damage, Card source, boolean isCombat) {
+      int restDamage = damage; // Forge Nova: the arithmetic below saturates (NovaMath)
+
+      // Forge Nova: the cards of game.getCardsIn(Battlefield), in order, that have one of the names below (cached
+      // per global epoch; name changes bump it): no other card can change restDamage, every branch tests the name
+      for(Card c : (TraitEpoch.DISABLED ? this.getGame().getCardsIn(ZoneType.Battlefield) : java.util.Arrays.asList(forge.game.replacement.NovaStaticSourceIndex.namedCards(this.getGame(), ZoneType.Battlefield, NOVA_REPLACE_DAMAGE_BF)))) {
+
          final String cName = c.getName(); // Forge Nova: one name lookup per card
          if (cName.equals("Sulfuric Vapors")) {
             if (source.isSpell() && source.isRed()) {
-               ++restDamage;
+               restDamage = forge.game.NovaMath.add(restDamage, 1);
             }
          } else if (cName.equals("Pyromancer's Swath")) {
             if (c.getController().equals(source.getController()) && (source.isInstant() || source.isSorcery()) && this.isCreature()) {
-               restDamage += 2;
+               restDamage = forge.game.NovaMath.add(restDamage, 2);
             }
          } else if (cName.equals("Furnace of Rath")) {
             if (this.isCreature()) {
-               restDamage *= 2;
+               restDamage = forge.game.NovaMath.mul(restDamage, 2);
             }
          } else if (cName.equals("Dictate of the Twin Gods")) {
-            restDamage += restDamage;
+            restDamage = forge.game.NovaMath.add(restDamage, restDamage);
          } else if (cName.equals("Gratuitous Violence")) {
             if (c.getController().equals(source.getController()) && source.isCreature() && this.isCreature()) {
-               restDamage *= 2;
+               restDamage = forge.game.NovaMath.mul(restDamage, 2);
             }
          } else if (cName.equals("Fire Servant")) {
             if (c.getController().equals(source.getController()) && source.isRed() && (source.isInstant() || source.isSorcery())) {
-               restDamage *= 2;
+               restDamage = forge.game.NovaMath.mul(restDamage, 2);
             }
          } else if (cName.equals("Gisela, Blade of Goldnight")) {
             if (!c.getController().equals(this.getController())) {
-               restDamage *= 2;
+               restDamage = forge.game.NovaMath.mul(restDamage, 2);
             }
          } else if (cName.equals("Inquisitor's Flail")) {
             if (isCombat && c.getEquipping() != null && (c.getEquipping().equals(this) || c.getEquipping().equals(source))) {
-               restDamage *= 2;
+               restDamage = forge.game.NovaMath.mul(restDamage, 2);
             }
          } else if (cName.equals("Ghosts of the Innocent")) {
             if (this.isCreature()) {
@@ -6356,25 +6536,25 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
             }
          } else if (cName.equals("Benevolent Unicorn")) {
             if (source.isSpell() && this.isCreature()) {
-               --restDamage;
+               restDamage = forge.game.NovaMath.sub(restDamage, 1);
             }
          } else if (cName.equals("Divine Presence")) {
             if (restDamage > 3 && this.isCreature()) {
                restDamage = 3;
             }
          } else if (cName.equals("Lashknife Barrier") && c.getController().equals(this.getController()) && this.isCreature()) {
-            --restDamage;
+            restDamage = forge.game.NovaMath.sub(restDamage, 1);
          }
       }
 
-      for(Card c : this.getGame().getCardsIn(ZoneType.Command)) {
+      for(Card c : (TraitEpoch.DISABLED ? this.getGame().getCardsIn(ZoneType.Command) : java.util.Arrays.asList(forge.game.replacement.NovaStaticSourceIndex.cardsIn(this.getGame(), ZoneType.Command)))) {
          final String cName = c.getName(); // Forge Nova: one name lookup per card
          if (cName.equals("Insult Effect")) {
             if (c.getController().equals(source.getController())) {
-               restDamage *= 2;
+               restDamage = forge.game.NovaMath.mul(restDamage, 2);
             }
          } else if (cName.equals("Mishra") && c.isCreature() && c.getController().equals(source.getController())) {
-            restDamage *= 2;
+            restDamage = forge.game.NovaMath.mul(restDamage, 2);
          }
       }
 
@@ -6416,7 +6596,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
                this.addCounter(CounterEnumType.M1M1, damageIn, source.getController(), counterTable);
                damageType = GameEventCardDamaged.DamageType.M1M1Counters;
             } else {
-               this.damage.merge(Objects.hash(new Object[]{source.getId(), source.getGameTimestamp()}), damageIn, Integer::sum);
+               this.damage.merge(Objects.hash(new Object[]{source.getId(), source.getGameTimestamp()}), damageIn, forge.game.NovaMath::add);
                this.view.updateDamage(this);
             }
 
@@ -6746,6 +6926,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
 
    public void setSuspectedStatic(StaticAbility stAb) {
       this.suspectedStatic = stAb;
+      this.bumpTraitEpoch(); // Forge Nova: getHiddenStaticAbilities() includes the suspected static
    }
 
    public final boolean isSuspected() {
@@ -6770,6 +6951,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
             this.suspectedStatic = null;
          }
 
+         this.bumpTraitEpoch(); // Forge Nova: getHiddenStaticAbilities() includes the suspected static
          return true;
       }
    }
@@ -7182,7 +7364,18 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       this.getUnhiddenKeywords(state).applyStaticAbility(list);
    }
 
+   /** Forge Nova: false when getHiddenStaticAbilities() is empty whatever this card's counters and zone are. */
+   public final boolean novaMayHaveHiddenStatics() {
+      return !this.counterTypeKeywordStatic.isEmpty() || this.suspectedStatic != null;
+   }
+
+   /** Forge Nova: shared empty result; the only callers (GameAction, StaticAbility) just iterate it or call contains */
+   private static final FCollectionView<StaticAbility> NOVA_NO_HIDDEN_STATICS = new FCollection<StaticAbility>();
+
    public final FCollectionView<StaticAbility> getHiddenStaticAbilities() {
+      if (this.counterTypeKeywordStatic.isEmpty() && !(this.isInPlay() && this.isSuspected()) && !TraitEpoch.DISABLED) {
+         return NOVA_NO_HIDDEN_STATICS; // nothing below would be added
+      }
       FCollection<StaticAbility> result = new FCollection<StaticAbility>();
       if (this.isInPlay() && this.isSuspected()) {
          result.add(this.suspectedStatic);
@@ -7244,7 +7437,8 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
 
    /** Forge Nova: true when shield/stun/finality counters add replacement effects. */
    public final boolean hasCounterReplacementEffects() {
-      return this.getCounters(CounterEnumType.SHIELD) > 0 || this.getCounters(CounterEnumType.STUN) > 0 || this.getCounters(CounterEnumType.FINALITY) > 0;
+      // an empty counter set holds none of the three (most cards have no counters at all)
+      return this.hasCounters() && (this.getCounters(CounterEnumType.SHIELD) > 0 || this.getCounters(CounterEnumType.STUN) > 0 || this.getCounters(CounterEnumType.FINALITY) > 0);
    }
 
    /** Forge Nova: the counter-dependent part of updateReplacementEffects (unchanged logic). */
@@ -7733,11 +7927,44 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       this.renderForUi = value;
    }
 
+   /** Forge Nova: {name, set code, art preference, common db size, variant db size, result} of the last lookup. */
+   private volatile Object[] novaPaperMemo;
+
    public IPaperCard getPaperCard() {
       IPaperCard cp = this.paperCard;
-      if (cp != null) {
-         return cp;
-      } else {
+      if (cp != null || TraitEpoch.DISABLED) {
+         return cp != null ? cp : this.novaLookupPaperCard();
+      }
+      // Forge Nova: cards without a paper card (tokens...) looked themselves up in the card database (up to five
+      // name searches) on every call, and getRules/isDoubleFaced/isSplitCard/getCMC call this constantly. The
+      // lookup depends only on the name and set code (same String objects), the art preference and the database,
+      // which only grows (card counts change when a card is added).
+      final String name = this.getName();
+      final String set = this.getSetCode();
+      final StaticData sd = StaticData.instance();
+      final Object pref = sd.getCardArtPreference();
+      final int nCommon = sd.getCommonCards().getAllCards().size();
+      final int nVariant = sd.getVariantCards().getAllCards().size();
+      final Object[] m = this.novaPaperMemo;
+      if (m != null && m[0] == name && m[1] == set && m[2] == pref && (Integer)m[3] == nCommon && (Integer)m[4] == nVariant) {
+         IPaperCard r = (IPaperCard)m[5];
+         if (TraitEpoch.VERIFY) {
+            IPaperCard fresh = this.novaLookupPaperCard();
+            if (fresh != r) {
+               TraitEpoch.mismatch("getPaperCard", this, java.util.Collections.singletonList(r), java.util.Collections.singletonList(fresh));
+            }
+         }
+         return r;
+      }
+      IPaperCard r = this.novaLookupPaperCard();
+      this.novaPaperMemo = new Object[]{name, set, pref, nCommon, nVariant, r};
+      return r;
+   }
+
+   /** Forge Nova: the original getPaperCard lookup for a card without a paper card. */
+   private IPaperCard novaLookupPaperCard() {
+      IPaperCard cp;
+      {
          String name = this.getName();
          String set = this.getSetCode();
          if (StringUtils.isNotBlank(set)) {
@@ -8222,6 +8449,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
    public CardState getEmptyRoomState() {
       if (!this.states.containsKey(CardStateName.EmptyRoom)) {
          this.states.put(CardStateName.EmptyRoom, CardUtil.getEmptyRoomCharacteristic(this));
+         this.bumpTraitEpoch(); // Forge Nova: the set of states feeds getAllSpellAbilities()
       }
 
       return (CardState)this.states.get(CardStateName.EmptyRoom);
@@ -8251,6 +8479,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       this.bumpTraitEpoch();
       this.updateTypeCache();
       this.changedCardNames.putAll(in.changedCardNames);
+      this.bumpTraitEpoch(); // Forge Nova: names key NovaStaticSourceIndex.namedCards
       this.setChangedCardTraits(in.getChangedCardTraits());
       this.setChangedCardTraitsByText(in.getChangedCardTraitsByText());
       this.setChangedCardKeywordsByText(in.getChangedCardKeywordsByText());
@@ -8258,6 +8487,7 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       for(Map.Entry<CounterType, StaticAbility> e : in.counterTypeKeywordStatic.entrySet()) {
          this.counterTypeKeywordStatic.put((CounterType)e.getKey(), ((StaticAbility)e.getValue()).copy(this, true));
       }
+      this.bumpTraitEpoch(); // Forge Nova: getHiddenStaticAbilities() can include the copied statics
 
    }
 
@@ -8297,7 +8527,8 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
       }
 
       public int getTotal() {
-         return this.currentValue + this.tempBoost + this.bonusFromCounters;
+         // Forge Nova: saturated (NovaMath)
+         return forge.game.NovaMath.sat((long)this.currentValue + this.tempBoost + this.bonusFromCounters);
       }
 
       public String toString() {

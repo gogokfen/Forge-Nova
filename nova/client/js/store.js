@@ -21,6 +21,10 @@ export const store = {
   stack: /** @type {any[]} */ ([]),
   combat: /** @type {any[]} */ ([]),
   log: /** @type {any[]} */ ([]),
+  /** entries dropped from the front of `log` (it keeps the latest ones) */
+  logBase: 0,
+  /** changes when `log` starts over (new game, full resend) */
+  logEpoch: 0,
   order: /** @type {number[]} */ ([]),
   local: /** @type {number[]} */ ([]),
   spectator: false,
@@ -77,6 +81,8 @@ export function resetMatch() {
   store.stack = [];
   store.combat = [];
   store.log = [];
+  store.logBase = 0;
+  store.logEpoch++;
   store.sel = { ids: new Set(), min: 0, max: 0, hiC: new Set(), hiP: new Set(), weak: new Map() };
   store.prompt = { msg: '', b1: { l: '', on: false }, b2: { l: '', on: false } };
   store.peers = new Map();
@@ -97,6 +103,8 @@ on('state', (m) => {
     store.cards.clear();
     store.players.clear();
     store.log = [];
+    store.logBase = 0;
+    store.logEpoch++;
   }
   if (m.game) store.game = m.game;
   if (m.players) for (const p of m.players) store.players.set(p.id, p);
@@ -110,7 +118,11 @@ on('state', (m) => {
   if (m.combat) store.combat = m.combat;
   if (m.log) {
     store.log.push(...m.log);
-    if (store.log.length > 1500) store.log.splice(0, store.log.length - 1200);
+    if (store.log.length > 1500) {
+      const drop = store.log.length - 1200;
+      store.log.splice(0, drop);
+      store.logBase += drop;
+    }
   }
   rebuildDerived();
   changed(m.log ? 'state+log' : 'state');
@@ -149,6 +161,15 @@ export function zoneCards(p, zone) {
 export function zoneCount(p, zone) {
   const listed = p?.z?.[zone]?.length || 0;
   return listed + (p?.z?.[zone + '#'] || 0);
+}
+
+/** A number short enough for a card's P/T box: 12,345 → 12K, 2,147,483,647 → 2.1B (exact below 10,000). */
+export function shortNum(n) {
+  const a = Math.abs(Number(n));
+  if (!(a >= 10000)) return String(n);
+  const [d, u] = a >= 1e9 ? [1e9, 'B'] : a >= 1e6 ? [1e6, 'M'] : [1e3, 'K'];
+  const v = Number(n) / d;
+  return (Math.abs(v) < 10 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.trunc(v))) + u;
 }
 
 /** Human readable P/T string. */

@@ -144,6 +144,9 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
 
    public final void setName(String name0) {
       this.name = name0;
+      if (this.card != null) {
+         this.card.bumpTraitEpoch(); // Forge Nova: names key NovaStaticSourceIndex.namedCards
+      }
       this.view.updateName(this);
    }
 
@@ -175,7 +178,9 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
 
    public final void addType(String type0) {
       this.bumpEpoch();
+      ++this.novaTypeVersion;
       if (this.type.add(type0)) {
+         ++this.novaTypeVersion;
          this.updateTypes();
          this.updateTypesForView();
       }
@@ -184,7 +189,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
 
    public final void addType(Iterable<String> type0) {
       this.bumpEpoch();
-      if (this.type.addAll(type0)) {
+      ++this.novaTypeVersion;
+      boolean novaChanged = this.type.addAll(type0);
+      ++this.novaTypeVersion;
+      if (novaChanged) {
          this.updateTypes();
          this.updateTypesForView();
       }
@@ -195,8 +203,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
       this.bumpEpoch();
       if (type0 != this.type) {
          if (!type0.isEmpty() || !this.type.isEmpty()) {
+            ++this.novaTypeVersion;
             this.type.clear();
             this.type.addAll(type0);
+            ++this.novaTypeVersion;
             this.updateTypes();
             this.updateTypesForView();
          }
@@ -205,7 +215,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
 
    public final void removeType(CardType.Supertype st) {
       this.bumpEpoch();
-      if (this.type.remove(st)) {
+      ++this.novaTypeVersion;
+      boolean novaChanged = this.type.remove(st);
+      ++this.novaTypeVersion;
+      if (novaChanged) {
          this.updateTypes();
          this.updateTypesForView();
       }
@@ -214,10 +227,12 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
 
    public final void removeCardTypes(boolean sanisfy) {
       this.bumpEpoch();
+      ++this.novaTypeVersion;
       this.type.removeCardTypes();
       if (sanisfy) {
          this.type.sanisfySubtypes();
       }
+      ++this.novaTypeVersion;
 
       this.updateTypes();
       this.updateTypesForView();
@@ -225,7 +240,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
 
    public final void setCreatureTypes(Collection<String> ctypes) {
       this.bumpEpoch();
-      if (this.type.setCreatureTypes(ctypes)) {
+      ++this.novaTypeVersion;
+      boolean novaChanged = this.type.setCreatureTypes(ctypes);
+      ++this.novaTypeVersion;
+      if (novaChanged) {
          this.updateTypes();
          this.updateTypesForView();
       }
@@ -505,6 +523,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
    private volatile Object[] novaTriggers;
    private volatile Object[] novaStatics;
    private volatile Object[] novaReplacements;
+   /** incremented before and after every change of this.type (the only mutators are the type setters above) */
+   private volatile int novaTypeVersion;
+   /** (novaTypeVersion << 2) | 1 if Adventure | 2 if Omen, for the version it was computed at; -1 = none */
+   private volatile long novaAdvOmen = -1L;
 
    private void bumpEpoch() {
       if (this.card != null) {
@@ -521,7 +543,6 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
    @SuppressWarnings("unchecked")
    private static <T> FCollectionView<T> novaHit(Object[] c, long epoch) {
       if (c != null && ((Long) c[0]) == epoch) {
-         TraitEpoch.HITS.incrementAndGet();
          return (FCollectionView<T>) c[1];
       }
       return null;
@@ -535,7 +556,6 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
          if (TraitEpoch.VERIFY) { FCollectionView<?> fresh = this.computeSpellAbilities(); if (this.card.getTraitEpoch() == ep) novaVerify("getSpellAbilities", this, r, fresh); }
          return r;
       }
-      TraitEpoch.MISSES.incrementAndGet();
       r = this.computeSpellAbilities();
       this.novaSpellAbilities = new Object[]{ep, r};
       return r;
@@ -549,7 +569,6 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
          if (TraitEpoch.VERIFY) { FCollectionView<?> fresh = this.computeManaAbilities(); if (this.card.getTraitEpoch() == ep) novaVerify("getManaAbilities", this, r, fresh); }
          return r;
       }
-      TraitEpoch.MISSES.incrementAndGet();
       r = this.computeManaAbilities();
       this.novaManaAbilities = new Object[]{ep, r};
       return r;
@@ -563,7 +582,6 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
          if (TraitEpoch.VERIFY) { FCollectionView<?> fresh = this.computeNonManaAbilities(); if (this.card.getTraitEpoch() == ep) novaVerify("getNonManaAbilities", this, r, fresh); }
          return r;
       }
-      TraitEpoch.MISSES.incrementAndGet();
       r = this.computeNonManaAbilities();
       this.novaNonManaAbilities = new Object[]{ep, r};
       return r;
@@ -577,7 +595,6 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
          if (TraitEpoch.VERIFY) { FCollectionView<?> fresh = this.computeTriggers(); if (this.card.getTraitEpoch() == ep) novaVerify("getTriggers", this, r, fresh); }
          return r;
       }
-      TraitEpoch.MISSES.incrementAndGet();
       r = this.computeTriggers();
       this.novaTriggers = new Object[]{ep, r};
       return r;
@@ -591,7 +608,6 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
          if (TraitEpoch.VERIFY) { FCollectionView<?> fresh = this.computeStaticAbilities(); if (this.card.getTraitEpoch() == ep) novaVerify("getStaticAbilities", this, r, fresh); }
          return r;
       }
-      TraitEpoch.MISSES.incrementAndGet();
       r = this.computeStaticAbilities();
       this.novaStatics = new Object[]{ep, r};
       return r;
@@ -602,7 +618,6 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
       long ep = this.card.getTraitEpoch();
       FCollectionView<ReplacementEffect> base = novaHit(this.novaReplacements, ep);
       if (base == null) {
-         TraitEpoch.MISSES.incrementAndGet();
          base = this.computeReplacementEffects(false);
          this.novaReplacements = new Object[]{ep, base};
       }
@@ -610,8 +625,22 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
       if (rulesHost) {
          // counter- and type-dependent extras are cheap; append them exactly as the original does
          boolean counters = this.card.hasCounterReplacementEffects();
-         boolean adventure = this.type.hasSubtype("Adventure");
-         boolean omen = this.type.hasSubtype("Omen");
+         // the Adventure/Omen subtype test only changes with this.type (see novaTypeVersion); it used to cost
+         // ~7% of all engine time because Forge asks every card in the game for its replacement effects
+         final long tv = this.novaTypeVersion & 0xFFFFFFFFL;
+         final long ao = this.novaAdvOmen;
+         boolean adventure, omen;
+         if ((ao >>> 2) == tv) {
+            adventure = (ao & 1L) != 0L;
+            omen = (ao & 2L) != 0L;
+            if (TraitEpoch.VERIFY && (adventure != this.type.hasSubtype("Adventure") || omen != this.type.hasSubtype("Omen")) && tv == (this.novaTypeVersion & 0xFFFFFFFFL)) {
+               TraitEpoch.mismatch("adventureOmenSubtype", this.card, java.util.Arrays.asList(adventure, omen), java.util.Arrays.asList(this.type.hasSubtype("Adventure"), this.type.hasSubtype("Omen")));
+            }
+         } else {
+            adventure = this.type.hasSubtype("Adventure");
+            omen = this.type.hasSubtype("Omen");
+            this.novaAdvOmen = tv << 2 | (adventure ? 1L : 0L) | (omen ? 2L : 0L);
+         }
          if (counters || adventure || omen) {
             FCollection<ReplacementEffect> result = new FCollection<ReplacementEffect>(base);
             if (counters) {
@@ -889,6 +918,11 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
 
    public FCollectionView<ReplacementEffect> getReplacementEffects() {
       return this.getReplacementEffects(true);
+   }
+
+   /** Forge Nova: true when getReplacementEffects() adds (and may first create) this state's Adventure/Omen effect. */
+   public final boolean novaHasAdventureOrOmen() {
+      return this.type.hasSubtype("Adventure") || this.type.hasSubtype("Omen");
    }
 
    private FCollectionView<ReplacementEffect> computeReplacementEffects(boolean rulesHost) {

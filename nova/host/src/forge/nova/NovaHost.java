@@ -8,25 +8,31 @@ import forge.ai.PlayerControllerAi;
 import forge.card.CardDb;
 import forge.deck.Deck;
 import forge.game.Game;
+import forge.game.GameView;
 import forge.game.ability.AbilityKey;
 import forge.game.card.Card;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
+import forge.game.player.RegisteredPlayer;
 import forge.game.zone.ZoneType;
 import forge.gamemodes.match.HostedMatch;
 import forge.gamemodes.match.NextGameDecision;
+import forge.gui.interfaces.IGuiGame;
 import forge.interfaces.IGameController;
 import forge.item.PaperCard;
 import forge.localinstance.properties.ForgeConstants;
 import forge.localinstance.properties.ForgeNetPreferences;
 import forge.localinstance.properties.ForgePreferences;
 import forge.model.FModel;
+import forge.nova.discord.DiscordPresence;
 import forge.nova.gui.Dialogs;
+import forge.nova.gui.HouseRules;
 import forge.nova.gui.NovaAudio;
 import forge.nova.gui.NovaEdt;
 import forge.nova.gui.NovaGuiBase;
 import forge.nova.gui.NovaGuiGame;
 import forge.nova.gui.NovaImageFetcher;
+import forge.nova.moxfield.MoxfieldSync;
 import forge.nova.net.ClientLink;
 import forge.nova.net.NovaServer;
 import forge.nova.online.OnlineRoom;
@@ -57,6 +63,11 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
     private final File novaDir;
     private final LobbyService lobby = new LobbyService();
     private final DeckService decks = new DeckService();
+    /** created once Forge has loaded (its settings file lives in Forge's preferences folder) */
+    private volatile MoxfieldSync moxfield;
+    /** Discord Rich Presence; created once Forge has loaded, like moxfield */
+    private volatile DiscordPresence presence;
+    private final Achievements achievements = new Achievements();
     private final Tunnel tunnel;
     private final Thumbnails thumbs;
     /** friends' invite code; stays the same while Nova runs, so a reopened room keeps its links */
@@ -107,9 +118,12 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
             long t0 = System.currentTimeMillis();
             try {
                 FModel.initialize(null, null);
+                moxfield = new MoxfieldSync(novaDir, link::send);
+                presence = new DiscordPresence(new File(ForgeConstants.USER_PREFS_DIR));
                 ready = true;
                 System.out.println("[Nova] Forge model ready in " + (System.currentTimeMillis() - t0) + " ms");
                 link.send(helloJson());
+                moxfield.autoSync(true); // Moxfield edits made since the last start show up in the lobby
             } catch (Throwable e) {
                 e.printStackTrace();
                 loadError = String.valueOf(e);
@@ -139,6 +153,9 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
             o.put("music", p.getPrefBoolean(ForgePreferences.FPref.UI_ENABLE_MUSIC));
             o.put("volSounds", p.getPrefInt(ForgePreferences.FPref.UI_VOL_SOUNDS));
             o.put("volMusic", p.getPrefInt(ForgePreferences.FPref.UI_VOL_MUSIC));
+            o.put("devMode", p.getPrefBoolean(ForgePreferences.FPref.DEV_MODE_ENABLED));
+            // the free mulligan house rule needs Nova's engine patches (skipped after a Forge update until rebuilt)
+            o.put("freeMullOk", HouseRules.freeMulliganAvailable());
         }
         o.endObj();
         return o.toString();
@@ -226,9 +243,19 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
                 } catch (IllegalArgumentException e) {
                     return NovaServer.Response.error(400, e.getMessage());
                 }
+            case "moxfield", "moxfield/auto", "moxfield/settings", "moxfield/check", "moxfield/apply", "moxfield/link",
+                 "moxfield/unlink", "moxfield/hide", "moxfield/open":
+                if (!ready || moxfield == null) return NovaServer.Response.error(503, "still loading");
+                return moxfieldApi(method, path, body);
             case "match/start":
                 if (!"POST".equals(method)) return NovaServer.Response.error(405, "POST only");
                 return startMatch(JsonParser.parseString(body).getAsJsonObject());
+            case "achievements":
+                if (!ready) return NovaServer.Response.error(503, "still loading");
+                return NovaServer.Response.json(achievements.json());
+            case "discord", "discord/screen", "discord/portal":
+                if (!ready || presence == null) return NovaServer.Response.error(503, "still loading");
+                return discordApi(method, path, body);
             case "prefs":
                 if ("POST".equals(method)) {
                     return setPrefs(JsonParser.parseString(body).getAsJsonObject());
@@ -287,6 +314,154 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
             default:
                 return NovaServer.Response.error(404, "unknown endpoint " + path);
         }
+    }
+
+    /** Moxfield sync: the user's Moxfield decks next to Forge's copies, and syncing them. */
+    private NovaServer.Response moxfieldApi(String method, String path, String body) {
+        final MoxfieldSync mox = moxfield;
+        if (!"moxfield".equals(path) && !"POST".equals(method)) {
+            return NovaServer.Response.error(405, "POST only");
+        }
+        final JsonObject req = body == null || body.isBlank() ? new JsonObject() : JsonParser.parseString(body).getAsJsonObject();
+        final java.util.function.Function<String, String> str = k -> req.has(k) && !req.get(k).isJsonNull() ? req.get(k).getAsString() : null;
+        try {
+            String json = switch (path) {
+                case "moxfield" -> mox.stateJson();
+                case "moxfield/auto" -> {
+                    mox.autoSync(false); // the lobby is showing: catch up with Moxfield when it's been a while
+                    yield mox.stateJson();
+                }
+                case "moxfield/settings" -> mox.settings(req);
+                case "moxfield/check" -> mox.check(str.apply("user"), req.has("force") && req.get("force").getAsBoolean());
+                case "moxfield/apply" -> {
+                    List<String> ids = new ArrayList<>();
+                    if (req.has("ids")) for (JsonElement e : req.getAsJsonArray("ids")) ids.add(e.getAsString());
+                    yield mox.apply(ids);
+                }
+                case "moxfield/link" -> mox.addLinks(str.apply("text"));
+                case "moxfield/unlink" -> mox.removeExtra(str.apply("id"));
+                case "moxfield/hide" -> mox.hide(str.apply("id"));
+                case "moxfield/open" -> {
+                    // in the user's own browser, where they are logged in to Moxfield (the app window has its own profile)
+                    String url = str.apply("url");
+                    if (url == null || !url.matches("https://(www\\.)?moxfield\\.com/[A-Za-z0-9_\\-/]*")) {
+                        throw new IllegalArgumentException("Not a Moxfield link.");
+                    }
+                    String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+                    new ProcessBuilder(os.contains("win") ? List.of("rundll32", "url.dll,FileProtocolHandler", url)
+                            : os.contains("mac") ? List.of("open", url) : List.of("xdg-open", url)).start();
+                    yield "{\"ok\":true}";
+                }
+                default -> throw new IllegalArgumentException("unknown endpoint " + path);
+            };
+            return NovaServer.Response.json(json);
+        } catch (IllegalArgumentException e) {
+            return NovaServer.Response.error(400, e.getMessage());
+        } catch (java.io.IOException e) {
+            return NovaServer.Response.error(502, e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return NovaServer.Response.error(503, "interrupted");
+        }
+    }
+
+    /**
+     * Discord Rich Presence: its settings (GET / POST discord), what the client shows outside a match (discord/screen:
+     * {screen: 'builder' | 'lobby'}), and Discord's page for creating the application id (discord/portal).
+     */
+    private NovaServer.Response discordApi(String method, String path, String body) {
+        final DiscordPresence p = presence;
+        final JsonObject req = body == null || body.isBlank() ? new JsonObject() : JsonParser.parseString(body).getAsJsonObject();
+        try {
+            switch (path) {
+                case "discord" -> {
+                    return NovaServer.Response.json("POST".equals(method) ? p.configure(req) : p.stateJson());
+                }
+                case "discord/screen" -> {
+                    MatchSession s = session;
+                    if (s == null || !s.isActive()) {
+                        if (req.has("screen") && "builder".equals(req.get("screen").getAsString())) p.builder();
+                        else presenceIdle();
+                    }
+                    return NovaServer.Response.json("{\"ok\":true}");
+                }
+                default -> {
+                    guiBase.browseToUrl("https://discord.com/developers/applications");
+                    return NovaServer.Response.json("{\"ok\":true}");
+                }
+            }
+        } catch (IllegalArgumentException e) {
+            return NovaServer.Response.error(400, e.getMessage());
+        }
+    }
+
+    /** Discord shows the menu, or the online room while one is open. */
+    private void presenceIdle() {
+        DiscordPresence p = presence;
+        if (p == null) {
+            return;
+        }
+        OnlineRoom r = room;
+        if (r != null) p.room(r.seats().size());
+        else p.menu();
+    }
+
+    private static String formatLabel(String format) {
+        return switch (format == null ? "" : format) {
+            case "commander" -> "Commander";
+            case "brawl" -> "Brawl";
+            case "oathbreaker" -> "Oathbreaker";
+            case "tinyLeaders" -> "Tiny Leaders";
+            default -> "Constructed";
+        };
+    }
+
+    /** A match began: Discord shows the format, the host player's deck and commander; life and turn follow. */
+    private void presenceForMatch(LobbyService.MatchSetup setup, NovaGuiGame hostGui, String format, boolean online) {
+        DiscordPresence p = presence;
+        if (p == null || hostGui == null) {
+            return;
+        }
+        String deck = null;
+        List<String> cmdrs = new ArrayList<>();
+        for (Map.Entry<RegisteredPlayer, IGuiGame> e : setup.guis().entrySet()) {
+            if (e.getValue() != hostGui) continue;
+            Deck d = e.getKey().getDeck();
+            if (d == null) continue;
+            deck = d.getName();
+            if (d.getCommanders() != null) {
+                for (PaperCard pc : d.getCommanders()) cmdrs.add(pc.getName());
+            }
+        }
+        p.matchStarted(formatLabel(format), deck, cmdrs, setup.players().size(), online);
+        hostGui.setOnGameStateChanged(() -> presenceTick(hostGui));
+    }
+
+    /** Life, turn and players left, for Discord (Forge's threads; DiscordPresence sends it when it changed). */
+    private void presenceTick(NovaGuiGame g) {
+        DiscordPresence p = presence;
+        GameView gv = g.getGameView();
+        if (p == null || gv == null) {
+            return;
+        }
+        PlayerView me = null;
+        for (PlayerView pv : g.localPlayers()) {
+            me = pv;
+            break;
+        }
+        int alive = 0;
+        for (PlayerView pv : gv.getPlayers()) {
+            if (!pv.getHasLost()) alive++;
+        }
+        p.matchState(me == null ? -1 : me.getLife(), gv.getTurn(), alive, me != null && me.getHasLost());
+    }
+
+    private static boolean houseRule(JsonObject req, String rule) {
+        if (!req.has("houseRules") || !req.get("houseRules").isJsonObject()) {
+            return false;
+        }
+        JsonObject hr = req.getAsJsonObject("houseRules");
+        return hr.has(rule) && hr.get(rule).getAsBoolean();
     }
 
     /** Floods every battlefield with permanents (Forge dev-mode code path, no triggers). */
@@ -376,7 +551,15 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
         if (p.has("music")) prefs.setPref(ForgePreferences.FPref.UI_ENABLE_MUSIC, p.get("music").getAsBoolean());
         if (p.has("volSounds")) prefs.setPref(ForgePreferences.FPref.UI_VOL_SOUNDS, String.valueOf(p.get("volSounds").getAsInt()));
         if (p.has("volMusic")) prefs.setPref(ForgePreferences.FPref.UI_VOL_MUSIC, String.valueOf(p.get("volMusic").getAsInt()));
+        if (p.has("devMode")) prefs.setPref(ForgePreferences.FPref.DEV_MODE_ENABLED, p.get("devMode").getAsBoolean());
         prefs.save();
+        if (p.has("devMode")) {
+            // the running match shows or hides its Dev tab
+            MatchSession s = session;
+            if (s != null && s.hostGui() != null && s.isActive()) {
+                s.hostGui().sendDevState();
+            }
+        }
         if (p.has("music") || p.has("volMusic")) {
             // starts the background music if it was switched on while nothing was playing
             forge.sound.SoundSystem.instance.refreshVolume();
@@ -405,6 +588,8 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
             return NovaServer.Response.error(400, e.getMessage());
         }
         guiBase.setGuiGameFactory(() -> gui); // AI-only matches get this GUI as spectator view
+        HouseRules.apply(houseRule(req, "freeMulligan"));
+        presenceForMatch(setup, gui, req.has("format") ? req.get("format").getAsString() : "constructed", false);
         final HostedMatch hm = guiBase.hostMatch();
         final MatchSession s = new MatchSession(hm, gui, List.of(gui), null);
         hm.setOnMatchOver(() -> onMatchOver(s));
@@ -439,6 +624,7 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
         }
         session = null;
         link.cancelAllDialogs();
+        presenceIdle();
         if (s.room() != null && !s.room().isClosed()) {
             s.room().onMatchEnded();
         } else {
@@ -734,7 +920,7 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
         }
         try {
             JsonObject cfg = new JsonObject();
-            for (String k : new String[]{"format", "life", "games", "shareDecks"}) {
+            for (String k : new String[]{"format", "life", "games", "shareDecks", "freeMulligan"}) {
                 if (req.has(k)) cfg.add(k, req.get(k));
             }
             r.configure(cfg);
@@ -780,6 +966,7 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
         r.startNetworking(!req.has("upnp") || req.get("upnp").getAsBoolean());
         r.systemChat("Room opened. Send your friends an invite link.");
         r.broadcastState();
+        presenceIdle();
         return NovaServer.Response.json("{\"ok\":true}");
     }
 
@@ -801,6 +988,7 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
             }
         }
         link.send("{\"t\":\"roomClosed\",\"host\":true}");
+        presenceIdle();
     }
 
     @Override
@@ -835,6 +1023,8 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
             unbind(r);
             return e.getMessage();
         }
+        HouseRules.apply(r.freeMulligan());
+        presenceForMatch(setup, hostGui[0], r.format(), true);
         final HostedMatch hm = guiBase.hostMatch();
         final MatchSession s = new MatchSession(hm, hostGui[0], List.copyOf(guis), r);
         guiBase.setGuiGameFactory(() -> hostGui[0]);
@@ -964,6 +1154,10 @@ public final class NovaHost implements NovaServer.Handler, ClientLink.Listener, 
                     return notFound();
                 }
                 return imageResponse(f);
+            }
+            if (path.equals("/achv")) {
+                File f = ready ? achievements.image(query.get("key")) : null;
+                return f == null ? notFound() : new NovaServer.Response(200, "image/png", Files.readAllBytes(f.toPath()), true);
             }
             if (path.startsWith("/avatar/")) {
                 byte[] png = skin.avatarPng(parseIndex(path.substring(8)));

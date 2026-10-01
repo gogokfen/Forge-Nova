@@ -2,14 +2,18 @@
 // Match setup screen: format, number of opponents, starting life, decks.
 
 import { api } from '../net.js';
-import { esc, pipsHtml, toast } from './text.js';
+import { el, esc, pipsHtml, toast } from './text.js';
 import { openOptions } from './options.js';
+import { openAchievements } from './achievements.js';
+import { HOUSE_RULES, hostCaps } from './house.js';
 import { FORMATS, GEN_CMDR, GEN_CONS, deckArt, deckFits, pickDeckDialog } from './decks.js';
+import { openMoxfield, moxAuto, moxPending, onMoxState } from './moxfield.js';
 
 const MAX_OPPONENTS = 7; // Forge plays up to 8 players
 export const LIFE_PRESETS = [20, 25, 30, 40];
 
 const STORE_KEY = 'nova-lobby-v2';
+
 /** the fixed game modes of earlier builds, as [format, opponents] */
 const V1_MODES = { cmdr4: ['commander', 3], cmdr2: ['commander', 1], std2: ['constructed', 1], ffa3: ['constructed', 2], brawl: ['brawl', 1] };
 
@@ -44,6 +48,7 @@ export class Lobby {
     /** life: null = the format's default */
     this.cfg = loadConfig();
     this.busy = false;
+    onMoxState(() => this.showMoxBadge());
   }
 
   async show() {
@@ -60,6 +65,21 @@ export class Lobby {
     }
     this.normalize();
     this.render();
+    moxAuto(); // with automatic sync on, decks changed on Moxfield meanwhile come in by themselves
+  }
+
+  openMoxfield() {
+    openMoxfield({ onOpenDeck: (ref) => this.onOpenBuilder(ref) });
+  }
+
+  /** The number of Moxfield decks waiting for a sync, on the lobby's Moxfield button. */
+  showMoxBadge() {
+    const b = this.root.querySelector('.mox-badge');
+    if (!b) return;
+    const n = moxPending();
+    b.textContent = n ? String(n) : '';
+    b.classList.toggle('hidden', !n);
+    b.parentElement?.setAttribute('title', n ? `${n} Moxfield deck${n === 1 ? '' : 's'} to sync` : 'Sync your decks from Moxfield');
   }
 
   hide() { this.root.classList.add('hidden'); }
@@ -90,6 +110,8 @@ export class Lobby {
     if (cfg.life != null) cfg.life = Math.max(1, Math.min(999, Math.round(Number(cfg.life)) || 1));
     if (![1, 3, 5].includes(cfg.games)) cfg.games = 1;
     cfg.spectate = !!cfg.spectate;
+    if (!cfg.house || typeof cfg.house !== 'object') cfg.house = {};
+    for (const [k] of HOUSE_RULES) cfg.house[k] = !!cfg.house[k];
     const cmdr = this.isCmdr();
     const all = [...(this.data?.user || []), ...(this.data?.builtin || [])];
     // saved picks refer to decks by folder + name; they may have been renamed or deleted since
@@ -131,9 +153,9 @@ export class Lobby {
     const profiles = this.data.aiProfiles || ['Default'];
     this.root.innerHTML = `<div class="lobby-wrap">
       <div class="lobby-head">
-        <div><div class="logo"><span class="logo-gem"></span>Forge <b>Nova</b></div>
+        <div><div class="logo"><span class="logo-icon"></span>Forge <b>Nova</b></div>
           <div class="sub">GPU-rendered client for the Forge rules engine · ${esc(this.data.playerName || 'Player')}</div></div>
-        <div style="display:flex;gap:8px"><button class="btn online-btn" data-online title="Play with friends over the internet or your home network">Play online</button><button class="btn" data-builder title="Build and edit decks">Deck Builder</button><button class="btn ghost" data-options title="Options (Esc)">Options</button><button class="btn ghost" data-quit>Quit</button></div>
+        <div style="display:flex;gap:8px"><button class="btn online-btn" data-online title="Play with friends over the internet or your home network">Play online</button><button class="btn" data-builder title="Build and edit decks">Deck Builder</button><button class="btn mox-btn" data-mox title="Sync your decks from Moxfield">Moxfield<span class="mox-badge hidden"></span></button><button class="btn" data-achv title="Your Forge achievements">Achievements</button><button class="btn ghost" data-options title="Options (Esc)">Options</button><button class="btn ghost" data-quit>Quit</button></div>
       </div>
       <div class="lobby-grid">
         <div class="card-panel"><h3>Game setup</h3>
@@ -150,6 +172,10 @@ export class Lobby {
             : `Custom · <a href="#" data-life-reset>use the ${esc(f.t)} default (${this.defaultLife()})</a>`}</div>
           <div class="field-row"><span>Games per match</span><div class="seg" data-games>${[1, 3, 5].map((n) => `<button class="${cfg.games === n ? 'sel' : ''}" data-n="${n}">${n}</button>`).join('')}</div></div>
           <div class="field-row"><span>Watch AI vs AI</span><div class="switch ${cfg.spectate ? 'on' : ''}" data-spect></div></div>
+          <div class="setup-label house-label">House rules</div>
+          ${HOUSE_RULES.map(([k, label, tip]) => `<div class="field-row house-row ${hostCaps.freeMullOk ? '' : 'off'}" title="${esc(tip)}"><span>${esc(label)}</span>
+            <div class="switch ${cfg.house[k] && hostCaps.freeMullOk ? 'on' : ''}" data-house="${k}"></div></div>
+            <div class="life-note house-note">${hostCaps.freeMullOk ? esc(tip) : 'Needs Nova\'s engine patches, which are off for this Forge version: run nova\\tools\\build.cmd.'}</div>`).join('')}
         </div>
         <div class="card-panel"><h3>Players <span class="sum">${this.playerCount()} players · ${esc(f.t)} · ${life} life each</span></h3><div class="slots">
           ${cfg.slots.map((s, i) => `<div class="slot" data-slot="${i}">
@@ -189,6 +215,11 @@ export class Lobby {
     this.root.querySelector('[data-life-reset]')?.addEventListener('click', (e) => { e.preventDefault(); this.update((c) => { c.life = null; }); });
     $$('[data-games] button').forEach((b) => b.addEventListener('click', () => this.update((c) => { c.games = Number(data(b, 'n')); })));
     this.root.querySelector('[data-spect]')?.addEventListener('click', () => this.update((c) => { c.spectate = !c.spectate; }));
+    $$('[data-house]').forEach((n) => n.addEventListener('click', () => {
+      if (!hostCaps.freeMullOk) return;
+      this.update((c) => { const k = data(n, 'house'); c.house[k] = !c.house[k]; });
+    }));
+    this.root.querySelector('[data-achv]')?.addEventListener('click', () => openAchievements());
     $$('[data-slot]').forEach((n) => {
       const i = Number(data(n, 'slot'));
       n.querySelector('[data-pick]')?.addEventListener('click', () => this.pickDeck(i));
@@ -207,21 +238,26 @@ export class Lobby {
     this.root.querySelector('[data-start]')?.addEventListener('click', () => this.start());
     this.root.querySelector('[data-options]')?.addEventListener('click', () => openOptions());
     this.root.querySelector('[data-builder]')?.addEventListener('click', () => this.onOpenBuilder(null));
+    this.root.querySelector('[data-mox]')?.addEventListener('click', () => this.openMoxfield());
+    this.showMoxBadge();
     this.root.querySelector('[data-online]')?.addEventListener('click', () => this.onOnline(this));
     this.root.querySelector('[data-quit]')?.addEventListener('click', async () => {
       try { await api('quit', {}); } catch { /* host is going away */ }
       window.close();
-      document.body.innerHTML = '<div class="boot"><div class="boot-card"><div class="logo"><span class="logo-gem"></span>Forge <b>Nova</b></div><div class="boot-msg">Closed. You can close this window.</div></div></div>';
+      document.body.innerHTML = '<div class="boot"><div class="boot-card"><div class="logo"><span class="logo-icon"></span>Forge <b>Nova</b></div><div class="boot-msg">Closed. You can close this window.</div></div></div>';
     });
   }
 
   pickDeck(slotIndex) {
     const cmdr = this.isCmdr();
-    pickDeckDialog({
+    const mox = el('<button class="btn small ghost" title="Sync your decks from Moxfield">Moxfield…</button>');
+    mox.addEventListener('click', () => { picker.close(); this.openMoxfield(); });
+    const picker = pickDeckDialog({
       title: `Choose a deck — ${this.slotName(slotIndex).replace(/^You$/, 'you')}`,
       initial: this.myDecks().length ? 'mine' : 'builtin',
+      tools: [mox],
       tabs: [
-        { key: 'mine', label: 'My decks', list: () => this.myDecks(), empty: 'No decks here. Build decks in classic Forge — they show up automatically.' },
+        { key: 'mine', label: 'My decks', list: () => this.myDecks(), empty: 'No decks here. Build decks in the Deck Builder or classic Forge, or sync them from Moxfield.' },
         { key: 'builtin', label: cmdr ? 'Commander precons' : 'Precons', list: () => (this.data.builtin || []).filter((d) => (cmdr ? d.cmdrs?.length : d.src === 'constructed' || d.src === 'precon')) },
         { key: 'random', label: 'Random', list: () => (cmdr ? GEN_CMDR : GEN_CONS).map((g) => ({ ...g })) },
       ],
@@ -239,6 +275,7 @@ export class Lobby {
       format: this.cfg.format,
       games: this.cfg.games,
       life: this.life(),
+      houseRules: { ...this.cfg.house },
       players: this.cfg.slots.map((s) => ({ type: s.type, deck: { src: s.deck?.src || 'gen', name: s.deck?.name || 'randomColors' }, profile: s.profile || '' })),
     };
     this.busy = true;

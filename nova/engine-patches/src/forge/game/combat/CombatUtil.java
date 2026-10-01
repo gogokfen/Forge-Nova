@@ -44,7 +44,8 @@ public class CombatUtil {
 
       Game game = playerWhoAttacks.getGame();
 
-      for(Card battle : CardLists.filter(game.getCardsIn(ZoneType.Battlefield), CardPredicates.BATTLES)) {
+      // Forge Nova: the same battles in the same order, from a list cached per global epoch (NovaStaticSourceIndex)
+      for(Card battle : (forge.game.card.TraitEpoch.DISABLED ? CardLists.filter(game.getCardsIn(ZoneType.Battlefield), CardPredicates.BATTLES) : java.util.Arrays.asList(forge.game.replacement.NovaStaticSourceIndex.battles(game)))) {
          if (battle.getProtectingPlayer().isOpponentOf(playerWhoAttacks)) {
             defenders.add(battle);
          }

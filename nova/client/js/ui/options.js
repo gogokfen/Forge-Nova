@@ -2,16 +2,21 @@
 // The options menu (Esc or ☰): board layout, display, audio, conceding and leaving the match.
 
 import { store, localPlayer, zoneCards, TF } from '../store.js';
-import { api, send, isServedGuest, guestRoom } from '../net.js';
+import { api, send, on, isServedGuest, guestRoom } from '../net.js';
 import { el, esc, manaHtml, toast } from './text.js';
 import { modal, closeTopWindow } from './dialogs.js';
 import { settings, setSetting, onSetting } from './settings.js';
 import { audioPrefs, applyAudioPrefs, saveGuestAudioPrefs } from './audio.js';
 import { leaveAsGuest } from './online.js';
 import { HAND_TYPES, HAND_RULES, handSortRules, handTypeOf, sortHand } from '../board/handsort.js';
+import { KEY_ACTIONS, MAX_KEYS, keysOf, keyLabel, keyHint, comboOf, bindKey, unbindKey, resetKeys, setListeningForKey } from './keys.js';
 
 /** @type {{close: () => void} | null} */
 let current = null;
+
+/** Forge preferences of this computer's host that the menu shows (from its hello message) */
+const hostPrefs = { devMode: false };
+on('hello', (m) => { if (m.devMode !== undefined) hostPrefs.devMode = !!m.devMode; });
 
 export function isOptionsOpen() { return current !== null; }
 export function closeOptions() { current?.close(); }
@@ -103,7 +108,7 @@ export function openOptions() {
   }));
   board.appendChild(pick);
   if (store.inMatch) {
-    row(board, 'Side panel', toggle(settings.side, (v) => setSetting('side', v)), 'Card details and game log · Tab');
+    row(board, 'Side panel', toggle(settings.side, (v) => setSetting('side', v)), 'Card details and game log' + keyHint('side').replace(/^ \((.*)\)$/, ' · $1'));
     row(board, 'Performance stats', toggle(settings.perf, (v) => setSetting('perf', v)));
   }
   const fs = toggle(!!document.fullscreenElement, (v) => {
@@ -123,6 +128,19 @@ export function openOptions() {
   row(hand, 'Auto-sort', sortCtl, 'Keeps your hand in the order you choose. While on, you can\'t drag cards to rearrange them.');
   // the Customize window has a switch of its own
   cleanup.push(onSetting((key, v) => { if (key === 'handSort') sortSwitch.classList.toggle('on', !!v); }));
+
+  // ---- gameplay
+  const play = section('Gameplay');
+  row(play, 'Highlight playable cards', toggle(settings.playable, (v) => setSetting('playable', v)),
+    'When you get priority, the cards you can cast or play with the mana you have glow (lands only while you may still play one)');
+  row(play, 'Dice animation', toggle(settings.diceAnim !== false, (v) => setSetting('diceAnim', v)),
+    'Die rolls show the right die (d4 to d20, the planar die) tumbling onto the table. Off: just the result.');
+  if (!guestRoom()) {
+    row(play, 'Developer mode', toggle(hostPrefs.devMode, (v) => {
+      hostPrefs.devMode = v;
+      api('prefs', { devMode: v }).catch((e) => toast('Could not save: ' + e.message, 'error'));
+    }), 'Forge\'s Dev tab beside the game log in games against the AI: add cards, set life, generate mana… (a Forge setting, shared with classic Forge)');
+  }
 
   // ---- audio (applies while dragging)
   const audio = section('Audio');
@@ -147,6 +165,9 @@ export function openOptions() {
   };
   volume('Sound effects', 'sounds', 'volSounds');
   volume('Music', 'music', 'volMusic');
+
+  // ---- Discord (this computer's Nova talks to the Discord app; not in a browser invite)
+  if (!isServedGuest()) discordSection(section('Discord'), row, cleanup);
 
   // ---- actions
   dlg.foot.append(button('Keyboard shortcuts', 'ghost', showShortcuts), el('<span class="count"></span>'));
@@ -185,6 +206,51 @@ export function openOptions() {
     }
   }
   dlg.foot.append(button(store.inMatch ? 'Resume' : 'Close', 'primary', close));
+}
+
+// ---------------------------------------------------------------- Discord Rich Presence
+
+const DISCORD_STATUS = {
+  off: 'Off.',
+  'no-id': 'Paste your Application ID to connect.',
+  connecting: 'Connecting to Discord…',
+  'no-discord': 'Discord isn\'t running here right now. Nova connects by itself when it starts.',
+};
+
+/** On/off, the application id Discord needs, whether your life total shows, and the connection state. */
+function discordSection(sec, row, cleanup) {
+  const sw = toggle(false, (v) => save({ enabled: v }));
+  row(sec, 'Rich Presence', sw, 'Your Discord status shows what you play: the format, your deck and commander, your life and the turn');
+  const idRow = el(`<div class="opt-row discord-id"><div><div class="lbl">Application ID</div>
+    <div class="hint">Discord shows the status under an application of yours: create one (free) in Discord's Developer Portal, name it what your status should say (e.g. "Forge Nova") and paste its Application ID here.</div></div>
+    <div class="opt-ctl"><input class="life-in wide-in" data-id placeholder="Application ID" spellcheck="false" autocomplete="off"><button class="btn small" data-portal title="Opens Discord's Developer Portal in your browser">Portal…</button></div></div>`);
+  sec.appendChild(idRow);
+  const lifeSw = toggle(true, (v) => save({ showLife: v }));
+  row(sec, 'Show your life total', lifeSw);
+  const status = el('<div class="hint discord-status"></div>');
+  sec.appendChild(status);
+  const input = /** @type {HTMLInputElement} */ (idRow.querySelector('[data-id]'));
+  const show = (s) => {
+    sw.classList.toggle('on', !!s.enabled);
+    lifeSw.classList.toggle('on', s.showLife !== false);
+    if (document.activeElement !== input) input.value = s.appId || '';
+    const text = !s.enabled ? DISCORD_STATUS.off
+      : s.status === 'connected' ? `Connected to Discord${s.user ? ' as ' + s.user : ''}: your status follows your games.`
+        : s.status === 'error' ? `${s.error || 'Discord refused the connection'}. Check the Application ID.`
+          : DISCORD_STATUS[s.status] || '';
+    status.textContent = text;
+    status.classList.toggle('ok', s.enabled && s.status === 'connected');
+    status.classList.toggle('warn', s.enabled && s.status === 'error');
+  };
+  const load = () => api('discord').then(show).catch(() => {});
+  const save = (body) => api('discord', body).then(show).catch((e) => { toast(e.message, 'error'); load(); });
+  input.addEventListener('change', () => save({ appId: input.value.trim() }));
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  idRow.querySelector('[data-portal]')?.addEventListener('click', () => api('discord/portal', {}).catch((e) => toast(e.message, 'error')));
+  load();
+  // the connection comes and goes with the Discord app
+  const timer = window.setInterval(load, 3000);
+  cleanup.push(() => clearInterval(timer));
 }
 
 // ---------------------------------------------------------------- hand auto-sort window
@@ -345,21 +411,90 @@ function dragSort(box, onDrop) {
   });
 }
 
+/**
+ * Keyboard shortcuts: click a key to change it, + to add a second one, × to remove one. A key does one thing:
+ * giving it to another action takes it away from the first. Esc stays the options key.
+ */
 export function showShortcuts() {
-  const d = modal('Keyboard shortcuts', { narrow: true, peek: false, onEsc: () => d.close() });
-  d.body.innerHTML = `<div class="settings-grid">
-    <span>Options menu</span><b>Esc</b>
-    <span>Confirm / OK / pass priority</span><b>Space · Enter</b>
-    <span>Cancel / End turn</span><b>Backspace</b>
-    <span>Pass until end of turn</span><b>F2</b>
-    <span>Undo</span><b>Ctrl+Z</b>
-    <span>Attack with everything</span><b>A</b>
-    <span>Toggle side panel</span><b>Tab</b>
-    <span>Apply click to whole pile</span><b>Shift+Click</b>
-    <span>Rearrange your hand</span><b>Drag a hand card</b>
-    <span>Zone menu</span><b>Right-click a player</b>
-    <span>Enlarge an opponent (Rows layout)</span><b>Mouse wheel</b></div>`;
-  d.foot.append(button('Close', 'primary', () => d.close()));
+  /** @type {{id: string, slot: number}|null} the key being changed, waiting for a key press */
+  let capture = null;
+  let note = '';
+  const listen = (slot) => {
+    capture = slot;
+    setListeningForKey(!!slot);
+  };
+  const close = () => {
+    window.removeEventListener('keydown', onKey, true);
+    listen(null);
+    d.close();
+  };
+  const d = modal('Keyboard shortcuts', { narrow: true, peek: false, onEsc: () => close() });
+  d.modal.classList.add('keys-dlg');
+  const render = () => {
+    const rows = KEY_ACTIONS.map((a) => {
+      const keys = keysOf(a.id);
+      const chips = keys.map((k, i) => {
+        const on = capture && capture.id === a.id && capture.slot === i;
+        return `<span class="kchip ${on ? 'listen' : ''}" data-id="${a.id}" data-slot="${i}" title="Click, then press the new key">${on ? 'Press a key…' : esc(keyLabel(k))}`
+          + `${on ? '' : `<button class="kx" data-del="${esc(k)}" data-id="${a.id}" title="Remove this key">×</button>`}</span>`;
+      }).join('');
+      const adding = capture && capture.id === a.id && capture.slot === keys.length;
+      const add = keys.length < MAX_KEYS
+        ? `<span class="kchip add ${adding ? 'listen' : ''}" data-id="${a.id}" data-slot="${keys.length}" title="Add another key">${adding ? 'Press a key…' : '+'}</span>` : '';
+      return `<span>${esc(a.label)}</span><span class="kchips">${chips}${add}</span>`;
+    }).join('');
+    d.body.innerHTML = `<div class="settings-grid keys-grid">
+      <span>Options menu, close a window</span><span class="kchips"><span class="kchip fixed" title="Esc can't be changed">Esc</span></span>
+      ${rows}
+      <span>Number window (choose X)</span><b>↑ ↓ · digits · End = Max</b>
+      <div class="keys-h">Mouse</div>
+      <span>Apply click to whole pile</span><b>Shift+Click</b>
+      <span>Rearrange your hand</span><b>Drag a hand card</b>
+      <span>Zone menu</span><b>Right-click a player</b>
+      <span>Scroll the text of the card you point at</span><b>Mouse wheel</b>
+      <span>Enlarge an opponent (Rows layout)</span><b>Mouse wheel over their area</b></div>
+      <div class="keys-note">${esc(note || 'Click a key to change it. Esc cancels.')}</div>`;
+  };
+  const onKey = (/** @type {KeyboardEvent} */ e) => {
+    if (!d.back.isConnected) { // the window was dropped with all others (the match ended)
+      window.removeEventListener('keydown', onKey, true);
+      listen(null);
+      return;
+    }
+    if (!capture) return;
+    e.preventDefault();
+    e.stopImmediatePropagation(); // nothing else acts on this key press, not even Esc
+    if (e.code === 'Escape') {
+      listen(null);
+      render();
+      return;
+    }
+    const combo = comboOf(e);
+    if (!combo) return; // a modifier alone: wait for the key it goes with
+    const label = KEY_ACTIONS.find((a) => a.id === capture?.id)?.label || '';
+    const movedFrom = bindKey(capture.id, capture.slot, combo);
+    note = movedFrom ? `${keyLabel(combo)} now means "${label}" (it no longer does "${movedFrom}").` : `${label}: ${keysOf(capture.id).map(keyLabel).join(' · ')}`;
+    listen(null);
+    render();
+  };
+  window.addEventListener('keydown', onKey, true);
+  d.body.addEventListener('click', (e) => {
+    const t = /** @type {HTMLElement} */ (e.target);
+    const del = /** @type {HTMLElement|null} */ (t.closest('[data-del]'));
+    if (del) {
+      unbindKey(del.dataset.id || '', del.dataset.del || '');
+      note = '';
+      listen(null);
+      render();
+      return;
+    }
+    const chip = /** @type {HTMLElement|null} */ (t.closest('.kchip[data-id]'));
+    listen(chip ? { id: chip.dataset.id || '', slot: Number(chip.dataset.slot) } : null);
+    render();
+  });
+  render();
+  d.foot.append(button('Reset to defaults', 'ghost', () => { resetKeys(); note = 'Default keys restored.'; listen(null); render(); }),
+    el('<span class="count"></span>'), button('Close', 'primary', () => close()));
 }
 
 function isTextField(t) {

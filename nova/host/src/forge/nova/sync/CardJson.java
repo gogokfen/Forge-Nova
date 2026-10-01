@@ -126,6 +126,7 @@ public final class CardJson {
             writeFace(o, st, viewers, true);
         }
         o.flag("cmd", cv.isCommander());
+        o.flag("imm", cv.isImmutable()); // an effect or emblem (they live in the command zone)
         writeBoardState(o, cv);
 
         if (mayFlip) {

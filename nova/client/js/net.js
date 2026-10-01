@@ -9,7 +9,7 @@ export const TOKEN = params.get('token') || sessionStorage.getItem('nova-token')
 if (TOKEN) sessionStorage.setItem('nova-token', TOKEN);
 
 /** version of the online room messages; a host of another Nova version refuses the connection */
-export const PROTO = 1;
+export const PROTO = 3;
 
 /** WebSocket close codes after which reconnecting makes no sense */
 export const CLOSE = { REPLACED: 4000, ROOM_CLOSED: 4001, KICKED: 4002, FULL: 4003, REJECTED: 4004, VERSION: 4010, FLOOD: 4020 };

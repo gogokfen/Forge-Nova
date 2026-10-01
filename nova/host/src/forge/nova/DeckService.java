@@ -230,8 +230,14 @@ public final class DeckService {
 
     // ------------------------------------------------------------------ deck files
 
+    /**
+     * Guards Forge's user deck storages: the deck builder, the lobby's lists and the Moxfield sync (which may
+     * write in the background) use them from different threads.
+     */
+    public static final Object FILES = new Object();
+
     /** User deck folders by the lobby's format ids. */
-    static IStorage<Deck> storage(String src) {
+    public static IStorage<Deck> storage(String src) {
         return switch (src == null ? "" : src) {
             case "constructed" -> FModel.getDecks().getConstructed();
             case "commander" -> FModel.getDecks().getCommander();
@@ -282,12 +288,15 @@ public final class DeckService {
     }
 
     public String loadDeck(String src, String path) {
-        Deck d = path == null ? null : findDeck(src, path);
+        Deck d;
+        synchronized (FILES) {
+            d = path == null ? null : findDeck(src, path);
+        }
         if (d == null) {
             throw new IllegalArgumentException("Deck not found: " + path);
         }
         JsonOut o = new JsonOut(8192).beginObj();
-        o.put("src", src).put("name", path).putOpt("comment", d.getComment());
+        o.put("src", src).put("name", path).putOpt("comment", d.getComment()).putOpt("source", d.getSourceUrl());
         o.beginObj("sections");
         writeSection(o, "commander", d.get(DeckSection.Commander));
         writeSection(o, "main", d.get(DeckSection.Main));
@@ -350,6 +359,12 @@ public final class DeckService {
 
     /** Saves a deck file; renaming or changing the format moves the file. Returns null on a name conflict. */
     public String saveDeck(JsonObject req) {
+        synchronized (FILES) {
+            return saveDeckLocked(req);
+        }
+    }
+
+    private String saveDeckLocked(JsonObject req) {
         final String src = str(req, "src");
         final String path = str(req, "name") == null ? "" : str(req, "name").trim();
         final String oldSrc = str(req, "oldSrc");
@@ -391,6 +406,14 @@ public final class DeckService {
                     deck.putSection(sec, new CardPool(s.getValue()));
                 }
             }
+            // and Forge's metadata the builder doesn't edit (Source URL holds a synced deck's Moxfield link)
+            deck.setSourceUrl(previous.getSourceUrl());
+            deck.getTags().addAll(previous.getTags());
+            if (!previous.getAiHints().isEmpty()) {
+                deck.setAiHints(String.join(" | ", previous.getAiHints()));
+            }
+            deck.setSleeveArtKey(previous.getSleeveArtKey());
+            deck.setSleeveArtOffset(previous.getSleeveArtOffset());
         }
         boolean moving = previous != null && !sameDeck && isUserFolder(oldSrc);
         // A rename that only changes letter case must drop the old file first: Windows sees one file.
@@ -413,11 +436,13 @@ public final class DeckService {
     }
 
     public void deleteDeck(String src, String path) {
-        IStorage<Deck> folder = folderOf(storage(src), path);
-        if (!folder.contains(leaf(path))) {
-            throw new IllegalArgumentException("Deck not found: " + path);
+        synchronized (FILES) {
+            IStorage<Deck> folder = folderOf(storage(src), path);
+            if (!folder.contains(leaf(path))) {
+                throw new IllegalArgumentException("Deck not found: " + path);
+            }
+            folder.delete(leaf(path));
         }
-        folder.delete(leaf(path));
     }
 
     /** Forge's verdict on a deck: the first rules problem (or none) and the formats it is legal in. */

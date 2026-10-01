@@ -2,6 +2,7 @@ package forge.nova.gui;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -17,6 +18,8 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class NovaEdt {
     private final LinkedBlockingQueue<Runnable> queue = new LinkedBlockingQueue<>();
+    /** players' actions among the queued work (see userAction) */
+    private final AtomicInteger userActions = new AtomicInteger();
     private final Thread thread;
 
     public NovaEdt() {
@@ -44,6 +47,23 @@ public final class NovaEdt {
 
     public boolean isEdt() {
         return Thread.currentThread() == thread;
+    }
+
+    /**
+     * A player's action (click, key...): runs like {@link #later}, and long optional tasks on this thread give
+     * way to it while it waits. Other queued work doesn't count: the game's own events queue UI updates here too.
+     */
+    public void userAction(Runnable r) {
+        userActions.incrementAndGet();
+        queue.add(() -> {
+            userActions.decrementAndGet();
+            r.run();
+        });
+    }
+
+    /** A player's action is waiting to run. */
+    public boolean hasUserActions() {
+        return userActions.get() > 0;
     }
 
     public void later(Runnable r) {

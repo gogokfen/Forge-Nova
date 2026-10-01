@@ -4,6 +4,7 @@
 import { api, imgUrl } from '../net.js';
 import { el, esc, manaHtml, pipsHtml, toast } from '../ui/text.js';
 import { modal } from '../ui/dialogs.js';
+import { openMoxfield } from '../ui/moxfield.js';
 import { findCard, T } from './catalog.js';
 import { FORMATS, parseDeckText, exportText, pipsOf } from './deck.js';
 
@@ -82,7 +83,8 @@ export async function openDeckBrowser({ onOpen, onDeleted }) {
   dlg.modal.classList.add('picker');
   const top = el(`<div class="picker-top"><div class="tabs"><button data-tab="mine">My decks</button><button data-tab="precons">Forge precons (templates)</button></div>
     <select data-folder><option value="">All formats</option>${Object.entries(FORMATS).map(([k, f]) => `<option value="${k}">${esc(f.t)}</option>`).join('')}</select>
-    <input placeholder="Search decks or commanders…"></div>`);
+    <input placeholder="Search decks or commanders…"><button class="btn small ghost" data-mox title="Sync your decks from Moxfield">Moxfield…</button></div>`);
+  top.querySelector('[data-mox]')?.addEventListener('click', () => { dlg.close(); openMoxfield({ onOpenDeck: onOpen }); });
   const grid = el('<div class="deck-grid"><div class="note">Loading decks…</div></div>');
   Object.assign(dlg.body.style, { padding: '0', display: 'flex', flexDirection: 'column', flex: '1' });
   dlg.body.append(top, grid);

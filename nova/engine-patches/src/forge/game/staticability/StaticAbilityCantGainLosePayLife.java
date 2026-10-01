@@ -8,6 +8,9 @@ import forge.game.zone.ZoneType;
 
 public class StaticAbilityCantGainLosePayLife {
    public static boolean anyCantGainLife(Player player) {
+      if (!StaticAbilityModeRegistry.mayExist(StaticAbilityMode.CantGainLife, StaticAbilityMode.CantChangeLife)) {
+         return false; // Forge Nova: no static ability of these modes exists anywhere
+      }
       Game game = player.getGame();
 
       for(Card ca : game.getCardsIn((Iterable)ZoneType.STATIC_ABILITIES_SOURCE_ZONES)) {
@@ -22,6 +25,9 @@ public class StaticAbilityCantGainLosePayLife {
    }
 
    public static boolean anyCantLoseLife(Player player) {
+      if (!StaticAbilityModeRegistry.mayExist(StaticAbilityMode.CantLoseLife, StaticAbilityMode.CantChangeLife)) {
+         return false; // Forge Nova: no static ability of these modes exists anywhere
+      }
       Game game = player.getGame();
 
       for(Card ca : game.getCardsIn((Iterable)ZoneType.STATIC_ABILITIES_SOURCE_ZONES)) {
@@ -36,6 +42,9 @@ public class StaticAbilityCantGainLosePayLife {
    }
 
    public static boolean anyCantPayLife(Player player, boolean effect, SpellAbility cause) {
+      if (!StaticAbilityModeRegistry.mayExist(StaticAbilityMode.CantPayLife, StaticAbilityMode.CantLoseLife, StaticAbilityMode.CantChangeLife)) {
+         return false; // Forge Nova: no static ability of these modes exists anywhere
+      }
       Game game = player.getGame();
 
       for(Card ca : game.getCardsIn((Iterable)ZoneType.STATIC_ABILITIES_SOURCE_ZONES)) {

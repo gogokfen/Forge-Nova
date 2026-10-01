@@ -27,6 +27,8 @@ export class DeckModel {
     this.comment = '';
     /** @type {{src:string, name:string}|null} the saved file this deck belongs to */
     this.origin = null;
+    /** where the deck file came from (Forge's "Source URL": a synced deck's Moxfield link) */
+    this.source = '';
     /** @type {Record<Section, Entry[]>} */
     this.sections = { commander: [], main: [], side: [] };
     this.dirty = false;
@@ -80,11 +82,12 @@ export class DeckModel {
   }
 
   /** Starts over: an empty deck (or loaded contents) that is not dirty. */
-  reset(src, name = '', origin = null, sections = null, comment = '') {
+  reset(src, name = '', origin = null, sections = null, comment = '', source = '') {
     this.src = FORMATS[src] ? src : 'commander';
     this.name = name;
     this.comment = comment || '';
     this.origin = origin;
+    this.source = origin ? source || '' : '';
     this.sections = sections || { commander: [], main: [], side: [] };
     this.undoStack = [];
     this.redoStack = [];
@@ -99,7 +102,7 @@ export class DeckModel {
     const src = user ? d.src : d.src === 'cmdPrecon' ? 'commander' : 'constructed';
     const name = String(d.name || '').split('/').pop() || '';
     this.reset(src, name, user ? { src: d.src, name: d.name } : null,
-      { commander: conv(d.sections.commander), main: conv(d.sections.main), side: conv(d.sections.side) }, d.comment);
+      { commander: conv(d.sections.commander), main: conv(d.sections.main), side: conv(d.sections.side) }, d.comment, d.source);
     if (!user) this.dirty = true; // a precon opened as a template still needs saving as your own deck
   }
 
@@ -227,12 +230,12 @@ export class DeckModel {
 
   // ---- persistence of unsaved work (per browser profile)
   toDraft() {
-    return JSON.stringify({ src: this.src, name: this.name, comment: this.comment, origin: this.origin, sections: this.sections, dirty: this.dirty });
+    return JSON.stringify({ src: this.src, name: this.name, comment: this.comment, origin: this.origin, source: this.source, sections: this.sections, dirty: this.dirty });
   }
 
   fromDraft(json) {
     const d = JSON.parse(json);
-    this.reset(d.src, d.name, d.origin, d.sections, d.comment);
+    this.reset(d.src, d.name, d.origin, d.sections, d.comment, d.source);
     this.dirty = !!d.dirty;
   }
 }

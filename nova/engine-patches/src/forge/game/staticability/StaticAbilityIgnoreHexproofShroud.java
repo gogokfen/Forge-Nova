@@ -10,6 +10,11 @@ import forge.game.zone.ZoneType;
 
 public class StaticAbilityIgnoreHexproofShroud {
    public static boolean ignore(GameEntity entity, SpellAbility spellAbility, StaticAbility keyword) {
+      // Forge Nova: for a hexproof (shroud) keyword only IgnoreHexproof (IgnoreShroud) statics can match
+      if (keyword.isKeyword(Keyword.HEXPROOF) && !StaticAbilityModeRegistry.mayExist(StaticAbilityMode.IgnoreHexproof)
+            || keyword.isKeyword(Keyword.SHROUD) && !StaticAbilityModeRegistry.mayExist(StaticAbilityMode.IgnoreShroud)) {
+         return false;
+      }
       Game game = entity.getGame();
 
       for(Card ca : game.getCardsIn((Iterable)ZoneType.STATIC_ABILITIES_SOURCE_ZONES)) {

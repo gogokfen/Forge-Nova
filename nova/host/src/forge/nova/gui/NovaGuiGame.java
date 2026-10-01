@@ -5,29 +5,38 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import forge.LobbyPlayer;
 import forge.deck.CardPool;
+import forge.game.Game;
 import forge.game.GameEntityView;
 import forge.game.GameOutcome;
 import forge.game.GameState;
+import forge.game.GameType;
 import forge.game.GameView;
+import forge.game.card.Card;
 import forge.game.card.CardView;
 import forge.game.phase.PhaseType;
 import forge.game.player.DelayedReveal;
 import forge.game.player.IHasIcon;
+import forge.game.player.Player;
 import forge.game.player.PlayerView;
+import forge.game.spellability.SpellAbility;
 import forge.game.spellability.SpellAbilityView;
 import forge.game.zone.ZoneType;
 import forge.gamemodes.match.AbstractGuiGame;
 import forge.gamemodes.match.NextGameDecision;
 import forge.gamemodes.match.YieldMarker;
+import forge.gamemodes.match.input.InputPassPriority;
 import forge.gui.interfaces.IGuiGame;
+import forge.interfaces.IDevModeCheats;
 import forge.interfaces.IGameController;
 import forge.item.PaperCard;
 import forge.localinstance.properties.ForgePreferences;
 import forge.localinstance.skin.FSkinProp;
 import forge.model.FModel;
 import forge.nova.net.ClientLink;
+import forge.nova.sync.CardDetails;
 import forge.nova.sync.StateSync;
 import forge.nova.util.JsonOut;
+import forge.player.NovaControllerAccess;
 import forge.player.PlayerControllerHuman;
 import forge.player.PlayerZoneUpdate;
 import forge.player.PlayerZoneUpdates;
@@ -43,13 +52,17 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Observer;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The match screen, implemented as a bridge to the browser.
@@ -87,12 +100,23 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
     private final Map<CardView, Integer> weak = Collections.synchronizedMap(new LinkedHashMap<>());
     private final Map<Integer, SpellAbilityView> abilityMenu = new ConcurrentHashMap<>();
     private volatile String abilityMenuJson;
+    /** the ability the player last picked to play (see getInteger: "choose X" for it) */
+    private volatile SpellAbility pickedAbility;
     private volatile String gameOverJson;
+    /** this player's option: mark the cards they can play whenever they get priority */
+    private volatile boolean highlightPlayable = true;
+    private final AtomicBoolean playablePending = new AtomicBoolean();
     private Observer logObserver;
     /** the player chose "Back to main menu": the match is being torn down, so no game-over screen */
     private volatile boolean leaving;
     /** a finished or abandoned match keeps calling into its GUI for a while; it must not reach the client */
     private volatile boolean disposed;
+    /** scry/surveil without Forge's card displays: the top order chosen in the window, for Forge's second question */
+    private volatile List<CardView> pendingTopOrder;
+    /** the free mulligan house rule: its note is on the mulligan prompt; this player has taken it this game */
+    private volatile boolean freeMullNote, freeMullTaken;
+    /** the host's own window feeds Discord's "now playing" (life, turn) */
+    private volatile Runnable onGameStateChanged;
 
     public NovaGuiGame(ClientLink link, Dialogs dialogs, NovaEdt edt, Runnable onGameEnded) {
         this(link, dialogs, edt, onGameEnded, true);
@@ -113,6 +137,28 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
 
     public Dialogs getDialogs() {
         return dialogs;
+    }
+
+    /** Called (on Forge's threads) when life totals or the turn change. */
+    public void setOnGameStateChanged(Runnable r) {
+        this.onGameStateChanged = r;
+    }
+
+    private void gameStateChanged() {
+        Runnable r = onGameStateChanged;
+        if (r != null && !disposed) {
+            try {
+                r.run();
+            } catch (RuntimeException ignored) {
+                // presence is best-effort
+            }
+        }
+    }
+
+    /** The game behind the view (null between games). */
+    public Game currentGame() {
+        GameView gv = getGameView();
+        return gv == null ? null : gv.getGame();
     }
 
     // =================================================================== ViewPolicy (for StateSync)
@@ -184,6 +230,7 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
             send(over);
         }
         refreshYieldUi(getCurrentPlayer());
+        sendDevState();
     }
 
     public boolean isActive() {
@@ -314,6 +361,9 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
         initPhaseStops();
         gameOverJson = null;
         abilityMenuJson = null;
+        pickedAbility = null;
+        pendingTopOrder = null;
+        freeMullNote = freeMullTaken = false;
         promptMsg = "";
         promptCard = -1;
         b1Label = b2Label = "";
@@ -335,6 +385,8 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
         sync.flushNow();
         sendPrompt();
         sendSelection();
+        sendDevState();
+        gameStateChanged();
     }
 
     private void initPhaseStops() {
@@ -437,13 +489,13 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
 
     @Override public void showCombat() { sync.requestFlush(); }
     @Override public void updatePhase(boolean saveState) { sync.requestFlush(); }
-    @Override public void updateTurn(PlayerView player) { sync.requestFlush(); }
+    @Override public void updateTurn(PlayerView player) { sync.requestFlush(); gameStateChanged(); }
     @Override public void updatePlayerControl() { sendMatchInfo(); sync.requestFlush(); }
     @Override public void updateStack() { sync.requestFlush(); }
     @Override public void updateZones(Iterable<PlayerZoneUpdate> zonesToUpdate) { sync.requestFlush(); }
     @Override public void updateCards(Iterable<CardView> cards) { sync.requestFlush(); }
     @Override public void updateManaPool(Iterable<PlayerView> manaPoolUpdate) { sync.requestFlush(); }
-    @Override public void updateLives(Iterable<PlayerView> livesUpdate) { sync.requestFlush(); }
+    @Override public void updateLives(Iterable<PlayerView> livesUpdate) { sync.requestFlush(); gameStateChanged(); }
     @Override public void updateShards(Iterable<PlayerView> shardsUpdate) { sync.requestFlush(); }
     @Override public void refreshField() { sync.requestFlush(); }
     @Override public void refreshCardDetails(Iterable<CardView> cards) { sync.requestFlush(); }
@@ -496,12 +548,44 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
     }
 
     private void setPrompt(PlayerView playerView, String message, CardView card) {
+        message = withHouseRuleNote(message);
         promptMsg = message == null ? "" : message;
         promptCard = card == null ? -1 : card.getId();
         promptPlayer = playerView == null ? -1 : playerView.getId();
         inputType = currentInputType();
         sync.flushNow();
         sendPrompt();
+    }
+
+    /**
+     * The free mulligan house rule (see MulliganService in the engine patches): on the keep / mulligan question, says
+     * when this hand's mulligan would be free (no lands or seven lands, the first time this game).
+     */
+    private String withHouseRuleNote(String message) {
+        freeMullNote = false;
+        if (message == null || freeMullTaken || !HouseRules.freeMulliganActive() || !"InputConfirmMulligan".equals(currentInputType())) {
+            return message;
+        }
+        try {
+            PlayerControllerHuman pch = humanController();
+            Player p = pch == null ? null : pch.getPlayer();
+            if (p == null) {
+                return message;
+            }
+            int cards = 0, lands = 0;
+            for (Card c : p.getCardsIn(ZoneType.Hand)) {
+                cards++;
+                if (c.isLand()) lands++;
+            }
+            if (cards == 0 || (lands != 0 && lands < 7)) {
+                return message;
+            }
+            freeMullNote = true;
+            return message + "\n\nHouse rule: this hand has " + (lands == 0 ? "no lands" : "seven lands")
+                    + ", so a mulligan now is free (once per game).";
+        } catch (RuntimeException e) {
+            return message;
+        }
     }
 
     /** Updates of the "waiting for another player (12s)" prompt, which must not stop its own timer. */
@@ -519,6 +603,172 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
         this.focus1 = focus1;
         inputType = currentInputType();
         sendPrompt();
+        if ("InputPassPriority".equals(inputType)) {
+            schedulePlayable();
+        }
+    }
+
+    // =================================================================== playable cards
+
+    private PlayerControllerHuman humanController() {
+        try {
+            return getGameController() instanceof PlayerControllerHuman pch ? pch : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * A priority prompt is shown: mark the cards the player can play now (after the prompt went out, on the UI
+     * thread like the clicks, while the game thread waits for this player).
+     */
+    private void schedulePlayable() {
+        if (highlightPlayable && !disposed && playablePending.compareAndSet(false, true)) {
+            edt.later(() -> {
+                playablePending.set(false);
+                refreshPlayable();
+            });
+        }
+    }
+
+    private void refreshPlayable() {
+        final PlayerControllerHuman pch = humanController();
+        if (!highlightPlayable || disposed || pch == null || pch.getPlayer() == null) {
+            return;
+        }
+        final Object input = pch.getInputQueue().getInput();
+        if (!(input instanceof InputPassPriority)) {
+            return;
+        }
+        // with Forge's own "actionable highlights" preference on, Forge marks these cards itself
+        if (pch.getYieldController().getBoolPref(ForgePreferences.FPref.UI_SHOW_ACTIONABLE_HIGHLIGHTS)) {
+            return;
+        }
+        Player p = pch.getPlayer();
+        if (p.getGame() == null || p.getGame().isGameOver()) {
+            return;
+        }
+        Set<CardView> cards = Playable.collect(p, edt::hasUserActions);
+        if (cards == null) {
+            schedulePlayable(); // a click came first; try again after it, if this prompt is still up
+            return;
+        }
+        if (pch.getInputQueue().getInput() == input && highlightPlayable) {
+            setWeaklySelectable(cards);
+        }
+    }
+
+    /** The client's display options that the host acts on. */
+    private void applyUiPrefs(JsonObject m) {
+        if (m.has("playable")) {
+            final boolean on = m.get("playable").getAsBoolean();
+            if (on == highlightPlayable) {
+                return;
+            }
+            highlightPlayable = on;
+            edt.later(() -> {
+                PlayerControllerHuman pch = humanController();
+                if (pch == null || pch.getPlayer() == null) {
+                    return;
+                }
+                if (on) {
+                    refreshPlayable();
+                } else if (!pch.getYieldController().getBoolPref(ForgePreferences.FPref.UI_SHOW_ACTIONABLE_HIGHLIGHTS)) {
+                    clearWeaklySelectable();
+                }
+            });
+        }
+    }
+
+    // =================================================================== developer mode
+
+    /**
+     * Classic Forge's "Dev Mode" tab: with Forge's developer mode preference on, in offline matches that have a
+     * player of ours (online, friends would play against the host's cheats).
+     */
+    public boolean devAllowed() {
+        if (disposed || isNetGame()) {
+            return false;
+        }
+        try {
+            if (!FModel.getPreferences().getPrefBoolean(ForgePreferences.FPref.DEV_MODE_ENABLED)) {
+                return false;
+            }
+        } catch (RuntimeException e) {
+            return false;
+        }
+        PlayerControllerHuman pch = humanController();
+        return pch != null && pch.getPlayer() != null;
+    }
+
+    /** Tells the client whether to show the Dev tab, and the state of its two switches. */
+    public void sendDevState() {
+        JsonOut o = new JsonOut(128).beginObj().put("t", "dev");
+        boolean on = devAllowed();
+        o.put("on", on);
+        if (on) {
+            try {
+                IGameController gc = getGameController();
+                if (gc != null) {
+                    o.put("lands", gc.canPlayUnlimitedLands()).put("viewAll", gc.mayLookAtAllCards());
+                }
+                GameView gv = getGameView();
+                o.flag("planar", gv != null && gv.getGame() != null && gv.getGame().getRules().hasAppliedVariant(GameType.Planechase));
+            } catch (RuntimeException ignored) {
+                // switches unknown
+            }
+        }
+        o.endObj();
+        send(o.toString());
+    }
+
+    /** One of the Dev tab's buttons (runs on the UI thread, as classic Forge runs them on Swing's). */
+    private void devAction(IGameController gc, String action) {
+        if (gc == null || !devAllowed()) {
+            return;
+        }
+        IDevModeCheats cheat = gc.cheat();
+        switch (action) {
+            case "lands" -> cheat.setCanPlayUnlimitedLands(!gc.canPlayUnlimitedLands());
+            case "viewAll" -> cheat.setViewAllCards(!gc.mayLookAtAllCards());
+            case "mana" -> cheat.generateMana();
+            case "tutor" -> cheat.tutorForCard();
+            case "cast" -> cheat.castASpell();
+            case "toHand" -> cheat.addCardToHand();
+            case "toLibrary" -> cheat.addCardToLibrary();
+            case "toGraveyard" -> cheat.addCardToGraveyard();
+            case "toExile" -> cheat.addCardToExile();
+            case "toBattlefield" -> cheat.addCardToBattlefield();
+            case "token" -> cheat.addTokenToBattlefield();
+            case "remove" -> cheat.removeCardsFromGame();
+            case "repeat" -> cheat.repeatLastAddition();
+            case "exileHand" -> cheat.exileCardsFromHand();
+            case "exilePlay" -> cheat.exileCardsFromBattlefield();
+            case "life" -> cheat.setPlayerLife();
+            case "win" -> cheat.winGame();
+            case "addCounters" -> cheat.addCountersToPermanent();
+            case "subCounters" -> cheat.removeCountersFromPermanent();
+            case "tap" -> cheat.tapPermanents();
+            case "untap" -> cheat.untapPermanents();
+            case "planarRoll" -> cheat.riggedPlanarRoll();
+            case "planeswalk" -> cheat.planeswalkTo();
+            case "askAI" -> cheat.askAI(false);
+            case "askSimAI" -> cheat.askAI(true);
+            case "loadState" -> cheat.setupGameState();
+            case "saveState" -> cheat.dumpGameState();
+            default -> {
+                return;
+            }
+        }
+        sendDevState();
+        sync.requestFlush();
+        // the cards that can be played may have changed (mana, lands, cards added...); most cheats finish on the
+        // game thread a moment later
+        CompletableFuture.delayedExecutor(250, TimeUnit.MILLISECONDS).execute(() -> {
+            if ("InputPassPriority".equals(currentInputType())) {
+                schedulePlayable();
+            }
+        });
     }
 
     private String currentInputType() {
@@ -688,6 +938,24 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
 
     @Override
     public SpellAbilityView getAbilityToPlay(CardView hostCard, List<SpellAbilityView> abilities, ITriggerEvent triggerEvent) {
+        SpellAbilityView chosen = chooseAbilityToPlay(hostCard, abilities, triggerEvent);
+        rememberPicked(chosen);
+        return chosen;
+    }
+
+    /** The ability the player picked (Forge maps the view back to it); a "choose X" question may be about it. */
+    private void rememberPicked(SpellAbilityView view) {
+        if (view == null) {
+            return;
+        }
+        try {
+            pickedAbility = NovaControllerAccess.abilityOf(humanController(), view);
+        } catch (RuntimeException e) {
+            pickedAbility = null;
+        }
+    }
+
+    private SpellAbilityView chooseAbilityToPlay(CardView hostCard, List<SpellAbilityView> abilities, ITriggerEvent triggerEvent) {
         if (abilities.isEmpty()) {
             return null;
         }
@@ -747,7 +1015,25 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
 
     @Override
     public void message(String message, String title) {
-        dialogs.message(message, title, false);
+        Game game = currentGame();
+        if (message != null && message.contains("Attack declaration invalid")) {
+            // Forge doesn't say why; the attack is still declared, so the reasons can be worked out
+            String why = null;
+            try {
+                why = AttackExplainer.explain(game);
+            } catch (RuntimeException e) {
+                e.printStackTrace();
+            }
+            dialogs.message(why != null ? why : message, "This attack isn't allowed", false);
+            return;
+        }
+        DiceRolls dice = null;
+        try {
+            dice = DiceRolls.parse(message, game);
+        } catch (RuntimeException ignored) {
+            // a plain message
+        }
+        dialogs.message(message, title, false, dice);
     }
 
     @Override
@@ -780,6 +1066,41 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
         return r == 0;
     }
 
+    /**
+     * Forge's number questions ("Choose X for Fireball", "How many times...", "How many?"): one small window with
+     * − / + instead of Forge's list of 0-9 and "Other...". For X of a mana cost it also tells the most the player's
+     * mana can pay (the Max button), as MTG Arena does.
+     */
+    @Override
+    public Integer getInteger(String message, int min, int max, int cutoff) {
+        return askNumber(message, min, max);
+    }
+
+    @Override
+    public Integer getInteger(String message, int min, int max, boolean sortDesc) {
+        return askNumber(message, min, max);
+    }
+
+    private Integer askNumber(String message, int min, int max) {
+        if (max <= min) {
+            return min; // nothing to choose (Forge doesn't ask either)
+        }
+        int afford = -1;
+        String cost = null;
+        PlayerControllerHuman pch = humanController();
+        Player p = pch == null ? null : pch.getPlayer();
+        try {
+            SpellAbility sa = p == null ? null : AffordableX.abilityFor(message, p, pickedAbility);
+            if (sa != null) {
+                cost = AffordableX.manaCost(sa);
+                afford = AffordableX.of(sa, p, max);
+            }
+        } catch (RuntimeException e) {
+            // no Max hint
+        }
+        return dialogs.number(message, min, max, afford, cost);
+    }
+
     @Override
     public <T> List<T> getChoices(String message, int min, int max, List<T> choices, List<T> selected, FSerializableFunction<T, String> display) {
         return dialogs.choose(message, min, max, choices, selected, display == null ? null : display::apply, null);
@@ -789,6 +1110,10 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
     public <T> IGuiGame.OrderResult<T> order(String title, String top, int remainingObjectsMin, int remainingObjectsMax,
                                              List<T> sourceChoices, List<T> destChoices, CardView referenceCard,
                                              boolean sideboardingMode, boolean showRememberCheckbox) {
+        List<T> scried = scryStep(title, sourceChoices, destChoices);
+        if (scried != null) {
+            return new IGuiGame.OrderResult<>(scried, false);
+        }
         Dialogs.Ordered<T> r = dialogs.order(title, top, remainingObjectsMin, remainingObjectsMax, sourceChoices, destChoices,
                 referenceCard, sideboardingMode, showRememberCheckbox);
         return new IGuiGame.OrderResult<>(r.items(), r.remember());
@@ -825,7 +1150,68 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
         for (CardView c : cards) all.add(c);
         List<CardView> movable = new ArrayList<>();
         for (CardView c : manipulable) movable.add(c);
+        int n = movable.size();
+        // Scry with Forge's "select from card displays" on: Forge passes the whole library, the top n movable. Only
+        // those n are shown; the answer is turned back into the library order Forge reads it from (arrangeForMove:
+        // the movable cards at the start go on top, those at the end, read from the end, go to the bottom)
+        if (toTop && toBottom && !toAnywhere && n > 0 && n <= all.size()
+                && new HashSet<>(all.subList(0, n)).equals(new HashSet<>(movable))
+                && Localizer.getInstance().getMessage("lblMoveCardstoToporBbottomofLibrary").equals(title)) {
+            Dialogs.Arranged r = dialogs.scry("Scry " + n, "bottom", new ArrayList<>(all.subList(0, n)));
+            if (r == null) {
+                return all;
+            }
+            List<CardView> out = new ArrayList<>(r.top());
+            List<CardView> rest = all.subList(n, all.size());
+            if (rest.isEmpty()) {
+                out.addAll(r.other()); // all of the library: it is simply this order, top first
+            } else {
+                out.addAll(rest);
+                List<CardView> bottom = new ArrayList<>(r.other());
+                Collections.reverse(bottom);
+                out.addAll(bottom);
+            }
+            return out;
+        }
         return dialogs.arrange(title, all, movable, toTop, toBottom, toAnywhere);
+    }
+
+    /**
+     * Scry and surveil without Forge's card displays come as two questions: which cards go to the bottom (or the
+     * graveyard), then the order of the rest on top. The scry window answers both: the first question returns its
+     * bottom (graveyard) cards and keeps its top order for the second. Null: not one of these questions.
+     */
+    @SuppressWarnings("unchecked")
+    private <T> List<T> scryStep(String title, List<T> source, List<T> dest) {
+        if (title == null || source == null || source.isEmpty() || (dest != null && !dest.isEmpty())) {
+            return null;
+        }
+        for (T t : source) {
+            if (!(t instanceof CardView)) {
+                return null;
+            }
+        }
+        List<CardView> cards = (List<CardView>) source;
+        Localizer loc = Localizer.getInstance();
+        String other = title.equals(loc.getMessage("lblSelectCardsToBeOutOnTheBottomOfYourLibrary")) ? "bottom"
+                : title.equals(loc.getMessage("lblSelectCardsToBePutIntoTheGraveyard")) ? "graveyard" : null;
+        if (other != null) {
+            Dialogs.Arranged r = dialogs.scry((other.equals("bottom") ? "Scry " : "Surveil ") + cards.size(), other, new ArrayList<>(cards));
+            if (r == null) {
+                pendingTopOrder = null;
+                return new ArrayList<>(); // everything stays on top
+            }
+            pendingTopOrder = r.top().size() > 1 ? new ArrayList<>(r.top()) : null;
+            return (List<T>) new ArrayList<>(r.other());
+        }
+        if (title.equals(loc.getMessage("lblArrangeCardsToBePutOnTopOfYourLibrary"))) {
+            List<CardView> remembered = pendingTopOrder;
+            pendingTopOrder = null;
+            if (remembered != null && remembered.size() == cards.size() && new HashSet<>(remembered).equals(new HashSet<>(cards))) {
+                return (List<T>) new ArrayList<>(remembered);
+            }
+        }
+        return null;
     }
 
     // =================================================================== browser -> engine
@@ -862,6 +1248,32 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
         return null;
     }
 
+    /** The hovered card's details for the side panel (see CardDetails); read concurrently with the game thread. */
+    private void sendCardText(int id, boolean alt) {
+        String json = null;
+        for (int attempt = 0; attempt < 3 && json == null; attempt++) {
+            try {
+                json = CardDetails.json(getGameView(), findCard(id), id, alt, this::mayView, this::mayFlip);
+            } catch (RuntimeException e) {
+                // the game changed the card meanwhile: try again
+            }
+        }
+        send(json != null ? json : "{\"t\":\"cardText\",\"id\":" + id + ",\"alt\":" + alt + "}");
+    }
+
+    /** "Cards left": the player's own cards whose place they can't see (their library, mostly); see LibraryLeft. */
+    private void sendLibraryLeft(int playerId) {
+        String json = null;
+        for (int attempt = 0; attempt < 3 && json == null; attempt++) {
+            try {
+                json = LibraryLeft.json(currentGame(), findPlayer(playerId), localPlayers(), this::mayView);
+            } catch (RuntimeException e) {
+                // the game changed meanwhile: try again
+            }
+        }
+        send(json != null ? json : "{\"t\":\"libraryLeft\",\"pid\":" + playerId + ",\"error\":true}");
+    }
+
     private PlayerView findPlayer(int id) {
         GameView gv = getGameView();
         if (gv == null) return null;
@@ -878,7 +1290,21 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
 
     /** Executes a client action on the UI thread, just like a mouse click in Swing. */
     public void handleAction(JsonObject m) {
-        edt.later(() -> {
+        final String type = m.has("t") ? m.get("t").getAsString() : "";
+        // read-only or display-only requests are answered right away instead of waiting behind the clicks
+        if ("cardText".equals(type)) {
+            sendCardText(intOf(m, "id", -1), m.has("alt") && m.get("alt").getAsBoolean());
+            return;
+        }
+        if ("uiPrefs".equals(type)) {
+            applyUiPrefs(m);
+            return;
+        }
+        if ("libraryLeft".equals(type)) {
+            sendLibraryLeft(intOf(m, "id", -1));
+            return;
+        }
+        edt.userAction(() -> {
             try {
                 doAction(m);
             } catch (Throwable t) {
@@ -893,7 +1319,13 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
         final IGameController gc = getGameController();
         switch (type) {
             case "ok" -> { if (gc != null) gc.selectButtonOk(); }
-            case "cancel" -> { if (gc != null) gc.selectButtonCancel(); }
+            case "cancel" -> {
+                if (freeMullNote && "InputConfirmMulligan".equals(currentInputType())) {
+                    freeMullTaken = true; // the engine counts it as the free one (same rule, same hand)
+                    freeMullNote = false;
+                }
+                if (gc != null) gc.selectButtonCancel();
+            }
             case "card" -> {
                 CardView c = findCard(intOf(m, "id", -1));
                 if (c == null || gc == null) return;
@@ -926,6 +1358,7 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
             case "ability" -> {
                 SpellAbilityView sa = abilityMenu.get(intOf(m, "id", -1));
                 abilityMenuJson = null;
+                rememberPicked(sa);
                 if (sa != null && gc != null) gc.selectAbility(sa);
             }
             case "abilityCancel" -> abilityMenuJson = null;
@@ -965,6 +1398,7 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
                 CardView c = findCard(intOf(m, "id", -1));
                 if (c != null && gc != null) gc.reorderHand(c, intOf(m, "index", 0));
             }
+            case "dev" -> devAction(gc, m.has("a") ? m.get("a").getAsString() : "");
             case "next" -> {
                 NextGameDecision d = NextGameDecision.valueOf(m.get("decision").getAsString());
                 gameOverJson = null;
@@ -984,6 +1418,7 @@ public final class NovaGuiGame extends AbstractGuiGame implements StateSync.View
     /** Stops streaming; used when the match is over or left. */
     public void dispose() {
         disposed = true;
+        pickedAbility = null;
         cancelWaitingTimer();
         sync.shutdown();
         dialogs.unbindGame(this);

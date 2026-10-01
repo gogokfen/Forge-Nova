@@ -1,8 +1,9 @@
 // @ts-check
 // Sprites for every visible card: animation toward layout targets, GPU drawing, hit testing.
 
-import { store, TF } from '../store.js';
+import { store, TF, shortNum } from '../store.js';
 import { KIND } from '../gl/renderer.js';
+import { settings } from '../ui/settings.js';
 
 const C = {
   shadow: [0, 0, 0, 0.55],
@@ -22,6 +23,10 @@ const C = {
   slot: [1, 1, 1, 0.10],
   slotText: [1, 1, 1, 0.22],
   cmdBg: [0.35, 0.22, 0.55, 0.95],
+  /** the command zone (tray, pile, commander glow) */
+  cmd: [0.71, 0.55, 1.0, 1],
+  /** cards you can play right now */
+  play: [0.30, 0.86, 0.47, 1],
 };
 
 const COUNTER_LABEL = {
@@ -103,7 +108,7 @@ export class Scene {
       const id = s.t.cardId;
       const card = id >= 0 ? store.cards.get(id) : null;
       const dest = card ? this.pileOf(card.o, card.z) : null;
-      if (dest && (card.z === 'Graveyard' || card.z === 'Exile' || card.z === 'Library')) {
+      if (dest && (card.z === 'Graveyard' || card.z === 'Exile' || card.z === 'Library' || card.z === 'Command')) {
         s.t = { ...s.t, x: dest.x, y: dest.y, w: dest.w, h: dest.h, rot: 0 };
       } else if (!card && s.t.role === 'hand') {
         s.t = { ...s.t, y: s.t.y - 60 };
@@ -157,7 +162,20 @@ export class Scene {
   }
 
   hasPulse() {
-    return store.sel.ids.size > 0 || this.targeted.size > 0;
+    return store.sel.ids.size > 0 || this.targeted.size > 0 || this.castableCommander();
+  }
+
+  /** a commander in my command zone tray can be cast right now (its glow pulses) */
+  castableCommander() {
+    const weak = store.sel.weak;
+    if (!weak.size || !this.showPlayable()) return false;
+    for (const s of this.sorted) if (s.t.tray && weak.has(s.t.cardId)) return true;
+    return false;
+  }
+
+  /** "can be played now" marks: the Options switch hides the ones of a priority prompt */
+  showPlayable() {
+    return settings.playable || store.prompt?.input !== 'InputPassPriority';
   }
 
   // ----------------------------------------------------------------- drawing
@@ -189,8 +207,19 @@ export class Scene {
     }
     for (const d of L.decor) {
       if (d.type === 'slot') {
-        r.ring(d.x, d.y, d.w, d.h, 0, d.w * 0.06, 1.2, C.slot);
-        font.draw(r, d.label, 0, 0, Math.max(9, d.h * 0.13), C.slotText, 'center', d.x, d.y, 0);
+        r.ring(d.x, d.y, d.w, d.h, 0, d.w * 0.06, 1.2, d.cmd ? [C.cmd[0], C.cmd[1], C.cmd[2], 0.35] : C.slot);
+        font.draw(r, d.label, 0, 0, Math.max(9, d.h * 0.13), d.cmd ? [C.cmd[0], C.cmd[1], C.cmd[2], 0.55] : C.slotText, 'center', d.x, d.y, 0);
+      } else if (d.type === 'cmdTray') {
+        // my command zone, beside the hand but clearly not part of it
+        r.rect(d.x, d.y, d.w, d.h, 0, 14, [0.30, 0.20, 0.50, 0.30]);
+        r.ring(d.x, d.y, d.w, d.h, 0, 14, 1.5, [C.cmd[0], C.cmd[1], C.cmd[2], 0.55]);
+        const label = 'COMMAND ZONE';
+        const fs = 10.5;
+        const lw = font.measure(label, fs) + 16;
+        const ly = d.y - d.h / 2;
+        r.rect(d.x, ly, lw, fs * 1.7, 0, fs * 0.85, [0.26, 0.17, 0.42, 0.98]);
+        r.ring(d.x, ly, lw, fs * 1.7, 0, fs * 0.85, 1, [C.cmd[0], C.cmd[1], C.cmd[2], 0.8]);
+        font.draw(r, label, 0, 0, fs, [0.92, 0.86, 1, 1], 'center', d.x, ly, 0);
       }
     }
   }
@@ -215,12 +244,28 @@ export class Scene {
     }
     // highlights
     if (t.interactive && id >= 0) {
+      const playable = sel.weak.has(id) && this.showPlayable();
       if (sel.hiC.has(id)) {
         r.glow(x, y, w, h, rot, radius, 12, [C.picked[0], C.picked[1], C.picked[2], 0.9 * a]);
       } else if (sel.ids.has(id)) {
         r.glow(x, y, w, h, rot, radius, 11, [C.select[0], C.select[1], C.select[2], pulse * a]);
-      } else if (sel.weak.has(id)) {
+      } else if (t.tray) {
+        // a commander waiting in my command zone: purple, bright and pulsing while it can be cast
+        if (playable) {
+          r.glow(x, y, w, h, rot, radius, 16, [C.cmd[0], C.cmd[1], C.cmd[2], (0.55 + 0.45 * pulse) * a]);
+          r.ring(x, y, w + 3, h + 3, rot, radius + 1.5, 2, [0.86, 0.78, 1, 0.95 * a]);
+        } else {
+          r.glow(x, y, w, h, rot, radius, 8, [C.cmd[0], C.cmd[1], C.cmd[2], 0.4 * a]);
+        }
+      } else if (playable && t.role === 'hand') {
+        // a card in my hand I can cast or play right now
+        r.glow(x, y, w, h, rot, radius, 14, [C.play[0], C.play[1], C.play[2], 0.85 * a]);
+        r.ring(x, y, w + 3, h + 3, rot, radius + 1.5, 2, [0.62, 1, 0.72, 0.95 * a]);
+      } else if (playable) {
         r.glow(x, y, w, h, rot, radius, 8, [C.weak[0], C.weak[1], C.weak[2], 0.75 * a]);
+      }
+      if (t.role === 'zoneTop' && t.zone === 'Command') {
+        r.ring(x, y, w + 2, h + 2, rot, radius + 1, 1.5, [C.cmd[0], C.cmd[1], C.cmd[2], 0.7 * a]);
       }
       if (this.targeted.has(id)) {
         r.glow(x, y, w, h, rot, radius, 10, [C.target[0], C.target[1], C.target[2], pulse * a]);
@@ -237,7 +282,8 @@ export class Scene {
     const tint = card?.ph ? 0.55 : 1;
     r.quad(KIND.CARD, x, y, w, h, rot, layer, radius, 0, 0, 1, 1, tint, tint, tint, a, gray, bright, 1, 0);
 
-    if (t.role === 'pileMember' || w < 34) return;
+    // small cards get no overlays, except the counts of zone piles
+    if (t.role === 'pileMember' || (w < 34 && t.role !== 'library' && t.role !== 'zoneTop')) return;
     this.drawOverlays(x, y, w, h, rot, a, card, t);
   }
 
@@ -255,10 +301,12 @@ export class Scene {
       const bw = font.measure(txt, fs) + fs * 0.9;
       r.rect(wx(0, h * 0.5 - fs * 0.2), wy(0, h * 0.5 - fs * 0.2), bw, fs * 1.35, rot, fs * 0.6, [0.05, 0.06, 0.08, 0.92 * a]);
       font.draw(r, txt, 0, 0, fs, [1, 1, 1, a], 'center', wx(0, h * 0.5 - fs * 0.2), wy(0, h * 0.5 - fs * 0.2), rot);
+      if (t.zone === 'Command' && card?.cmd) this.drawTax(wx, wy, w, h, rot, a, fs, card);
       return;
     }
     if (!card || card.hid && !card.fd) return;
     if (t.role === 'hand' || t.role === 'stack' || t.role === 'stackAbility') return;
+    if (t.tray) this.drawTax(wx, wy, w, h, rot, a, fs, card);
 
     // pile count badge (top-right)
     if (t.count && t.role === 'battlefield') {
@@ -274,7 +322,7 @@ export class Scene {
     const cnt = card.cnt || {};
     if (card.pow !== undefined && (card.tf & TF.CREATURE)) {
       const tough = card.tou - (card.dmg || 0);
-      stat = `${card.pow}/${tough}`;
+      stat = `${shortNum(card.pow)}/${shortNum(tough)}`;
       if (card.dmg) statColor = C.dmg;
     } else if (card.tf & TF.PW) {
       stat = String(cnt.LOYALTY ?? card.loy ?? '');
@@ -320,13 +368,6 @@ export class Scene {
       r.circle(wx(mx, markY), wy(mx, markY), fs * 1.35, [C.cmdBg[0], C.cmdBg[1], C.cmdBg[2], C.cmdBg[3] * a]);
       font.draw(r, '★', 0, 0, fs * 0.95, [1, 0.9, 0.6, a], 'center', wx(mx, markY), wy(mx, markY), rot);
     }
-    if (t.role === 'command') {
-      const label = card.cmd ? 'COMMANDER' : 'COMMAND';
-      const cfs = fs * 0.78;
-      const bw = font.measure(label, cfs) + cfs;
-      r.rect(wx(0, h / 2 - cfs * 0.2), wy(0, h / 2 - cfs * 0.2), bw, cfs * 1.4, rot, cfs * 0.5, [C.cmdBg[0], C.cmdBg[1], C.cmdBg[2], 0.95 * a]);
-      font.draw(r, label, 0, 0, cfs, [1, 1, 1, a], 'center', wx(0, h / 2 - cfs * 0.2), wy(0, h / 2 - cfs * 0.2), rot);
-    }
     const note = card.ovl || card.chT || '';
     if (note) {
       const cfs = fs * 0.8;
@@ -335,6 +376,19 @@ export class Scene {
       r.rect(wx(0, h * 0.12), wy(0, h * 0.12), bw, cfs * 1.4, rot, cfs * 0.4, [0.05, 0.06, 0.08, 0.85 * a]);
       font.draw(r, txt, 0, 0, cfs, [1, 0.9, 0.7, a], 'center', wx(0, h * 0.12), wy(0, h * 0.12), rot);
     }
+  }
+
+  /** Commander tax ({2} for each earlier cast from the command zone), top-right of a commander in the command zone. */
+  drawTax(wx, wy, w, h, rot, a, fs, card) {
+    const casts = store.players.get(card.o)?.cmdCast?.[card.id] || 0;
+    if (!casts) return;
+    const r = this.r, font = this.font;
+    const txt = 'TAX +' + casts * 2;
+    const cfs = fs * 0.9;
+    const bw = font.measure(txt, cfs) + cfs;
+    const bx = w / 2 - bw / 2 - w * 0.04, by = -h / 2 + cfs * 1.9;
+    r.rect(wx(bx, by), wy(bx, by), bw, cfs * 1.45, rot, cfs * 0.55, [C.cmdBg[0], C.cmdBg[1], C.cmdBg[2], 0.97 * a]);
+    font.draw(r, txt, 0, 0, cfs, [1, 0.93, 0.75, a], 'center', wx(bx, by), wy(bx, by), rot);
   }
 
   // ----------------------------------------------------------------- picking

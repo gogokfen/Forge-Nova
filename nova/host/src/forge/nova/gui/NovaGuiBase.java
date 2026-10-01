@@ -18,7 +18,9 @@ import org.jupnp.UpnpServiceConfiguration;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
@@ -172,8 +174,45 @@ public final class NovaGuiBase implements IGuiBase {
         dialogs.notify(title, first + " (details in nova\\logs\\host.log)", true);
     }
 
-    @Override public String showFileDialog(String title, String defaultDir) { return null; }
-    @Override public File getSaveFile(File defaultFile) { return defaultFile; }
+    /** Dev mode's "Load Game State": one of the files in that folder, newest first. */
+    @Override
+    public String showFileDialog(String title, String defaultDir) {
+        File dir = new File(defaultDir == null || defaultDir.isEmpty() ? "." : defaultDir);
+        File[] files = dir.listFiles(File::isFile);
+        if (files == null || files.length == 0) {
+            dlg().message("There are no files in " + dir.getAbsolutePath()
+                    + ".\nSave one with \"Save Game State\" first, or put a Forge game state file there.", title, false);
+            return null;
+        }
+        Arrays.sort(files, Comparator.comparingLong(File::lastModified).reversed());
+        List<String> names = new ArrayList<>();
+        for (File f : files) {
+            names.add(f.getName());
+        }
+        List<String> chosen = dlg().choose(title + " (" + dir.getAbsolutePath() + ")", 0, 1, names, null, null, null);
+        return chosen.isEmpty() ? null : new File(dir, chosen.get(0)).getAbsolutePath();
+    }
+
+    /** Dev mode's "Save Game State": a file name in the suggested folder. */
+    @Override
+    public File getSaveFile(File defaultFile) {
+        if (defaultFile == null) {
+            return null;
+        }
+        File dir = defaultFile.getAbsoluteFile().getParentFile();
+        String name = dlg().input("File name (saved in " + dir + "):", "Save Game State", defaultFile.getName(), null, false);
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        name = new File(name.trim()).getName(); // a name, not a path
+        if (!name.contains(".")) {
+            name += ".txt";
+        }
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            return null;
+        }
+        return new File(dir, name);
+    }
 
     @Override
     public void download(GuiDownloadService service, Consumer<Boolean> callback) {

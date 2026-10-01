@@ -34,6 +34,7 @@ public final class StaticAbilityIndex {
     private static final class Holder {
         final Game game;
         final long epoch;
+        final int players;
         final Map<StaticAbilityMode, Entries> byMode;
         final Set<Card> cards;
         final java.util.IdentityHashMap<Card, Long> cardEpochs;
@@ -41,6 +42,7 @@ public final class StaticAbilityIndex {
         Holder(Game game, long epoch, Map<StaticAbilityMode, Entries> byMode, Set<Card> cards, java.util.IdentityHashMap<Card, Long> cardEpochs) {
             this.game = game;
             this.epoch = epoch;
+            this.players = game.getPlayers().size(); // a player leaving the game shrinks getCardsIn()
             this.byMode = byMode;
             this.cards = cards;
             this.cardEpochs = cardEpochs;
@@ -55,7 +57,7 @@ public final class StaticAbilityIndex {
     private static Holder holder(Game game) {
         long ep = TraitEpoch.global();
         Holder h = last;
-        if (h == null || h.game != game || h.epoch != ep || TraitEpoch.DISABLED) {
+        if (h == null || h.game != game || h.epoch != ep || h.players != game.getPlayers().size() || TraitEpoch.DISABLED) {
             h = build(game, ep);
             last = h;
         } else if (TraitEpoch.VERIFY) {
@@ -78,12 +80,18 @@ public final class StaticAbilityIndex {
 
     /** Entries (statics + host cards) having {@code mode}, in Forge's scan order. Never null. */
     public static Entries entries(Game game, StaticAbilityMode mode) {
+        if (!StaticAbilityModeRegistry.mayExist(mode)) {
+            return Entries.EMPTY; // no static ability of this mode exists anywhere
+        }
         Entries e = holder(game).byMode.get(mode);
         return e == null ? Entries.EMPTY : e;
     }
 
     /** Static abilities having {@code mode}, in Forge's scan order. Never null. */
     public static List<StaticAbility> forMode(Game game, StaticAbilityMode mode) {
+        if (!StaticAbilityModeRegistry.mayExist(mode)) {
+            return Collections.emptyList(); // no static ability of this mode exists anywhere
+        }
         Entries e = holder(game).byMode.get(mode);
         return e == null ? Collections.emptyList() : e.statics;
     }

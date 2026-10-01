@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class OnlineRoom implements NovaServer.GuestHandler {
     /** bumped whenever client and host messages change incompatibly */
-    public static final int PROTOCOL = 1;
+    public static final int PROTOCOL = 3;
     public static final int MAX_PLAYERS = 8;
     private static final int MAX_NAME = 20;
     private static final int MAX_CHAT = 300;
@@ -181,6 +181,8 @@ public final class OnlineRoom implements NovaServer.GuestHandler {
     private Integer life;
     private int games = 1;
     private boolean shareDecks = true;
+    /** house rule: free mulligan for a hand with no lands or seven lands (see HouseRules) */
+    private boolean freeMulligan;
     private volatile boolean inGame;
     private volatile boolean starting;
     private volatile boolean closed;
@@ -217,7 +219,7 @@ public final class OnlineRoom implements NovaServer.GuestHandler {
 
     // =================================================================== setup (host)
 
-    /** Applies the host's settings: {format, life, games, shareDecks}. */
+    /** Applies the host's settings: {format, life, games, shareDecks, freeMulligan}. */
     public void configure(JsonObject cfg) {
         synchronized (this) {
             if (cfg.has("format")) {
@@ -240,6 +242,9 @@ public final class OnlineRoom implements NovaServer.GuestHandler {
             }
             if (cfg.has("shareDecks")) {
                 shareDecks = cfg.get("shareDecks").getAsBoolean();
+            }
+            if (cfg.has("freeMulligan")) {
+                freeMulligan = cfg.get("freeMulligan").getAsBoolean();
             }
             revalidateDecks();
         }
@@ -425,6 +430,10 @@ public final class OnlineRoom implements NovaServer.GuestHandler {
         return life;
     }
 
+    public synchronized boolean freeMulligan() {
+        return freeMulligan;
+    }
+
     public boolean isInGame() {
         return inGame;
     }
@@ -540,6 +549,7 @@ public final class OnlineRoom implements NovaServer.GuestHandler {
         o.put("format", format).put("games", games);
         if (life != null) o.put("life", life);
         o.flag("shareDecks", shareDecks);
+        o.flag("freeMulligan", freeMulligan);
         o.beginArr("seats");
         for (Seat s : seats) {
             o.beginObj().put("id", s.id).put("kind", s.kind.name().toLowerCase(Locale.ROOT));

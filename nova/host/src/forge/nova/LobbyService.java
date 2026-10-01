@@ -141,11 +141,13 @@ public final class LobbyService {
         JsonOut o = new JsonOut(64 * 1024);
         o.beginObj();
         o.beginArr("user");
-        writeStorage(o, "constructed", FModel.getDecks().getConstructed(), "");
-        writeStorage(o, "commander", FModel.getDecks().getCommander(), "");
-        writeStorage(o, "brawl", FModel.getDecks().getBrawl(), "");
-        writeStorage(o, "oathbreaker", FModel.getDecks().getOathbreaker(), "");
-        writeStorage(o, "tinyLeaders", FModel.getDecks().getTinyLeaders(), "");
+        synchronized (DeckService.FILES) { // a Moxfield sync may be writing decks meanwhile
+            writeStorage(o, "constructed", FModel.getDecks().getConstructed(), "");
+            writeStorage(o, "commander", FModel.getDecks().getCommander(), "");
+            writeStorage(o, "brawl", FModel.getDecks().getBrawl(), "");
+            writeStorage(o, "oathbreaker", FModel.getDecks().getOathbreaker(), "");
+            writeStorage(o, "tinyLeaders", FModel.getDecks().getTinyLeaders(), "");
+        }
         o.endArr();
         if (staticDecksJson == null) {
             JsonOut s = new JsonOut(256 * 1024);
@@ -245,6 +247,12 @@ public final class LobbyService {
     private static Deck resolveDeck(JsonObject spec, boolean commanderFormat) {
         String src = spec.has("src") ? spec.get("src").getAsString() : "gen";
         String name = spec.has("name") ? spec.get("name").getAsString() : "";
+        synchronized (DeckService.FILES) { // a Moxfield sync may be writing decks meanwhile
+            return resolveDeckLocked(src, name, commanderFormat);
+        }
+    }
+
+    private static Deck resolveDeckLocked(String src, String name, boolean commanderFormat) {
         Deck d = switch (src) {
             case "constructed" -> findInStorage(FModel.getDecks().getConstructed(), name);
             case "commander" -> findInStorage(FModel.getDecks().getCommander(), name);

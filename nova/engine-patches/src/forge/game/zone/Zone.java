@@ -34,9 +34,37 @@ public class Zone implements Serializable, Iterable<Card> {
    protected final transient Map<Card, ZoneType> enteredFromThisTurn = Maps.newHashMap();
    private static final Comparator<Card> COMPARATOR = Comparator.comparingInt((Card c) -> c.getCMC()).thenComparing((Card c) -> c.getColor().getOrderWeight()).thenComparing(Comparator.comparing((Card c) -> c.getName())).thenComparing((Card c) -> c.hasPerpetual());
 
+   // ---- Forge Nova: per-zone version (see forge.game.NovaStaticVisit)
+   private volatile long novaVersion;
+   private volatile Object novaStaticSummary;
+
+   /** The list changed: bump the global epoch (TraitEpoch users) and this zone's version. */
+   private void novaChanged() {
+      forge.game.card.TraitEpoch.bumpGlobal();
+      ++this.novaVersion;
+   }
+
+   /** Changes whenever this zone's list changes or a card whose zone is this one changes its abilities. */
+   public final long novaVersion() {
+      return this.novaVersion;
+   }
+
+   /** Called by Card.bumpTraitEpoch for a card whose zone is this one. */
+   public final void novaBumpVersion() {
+      ++this.novaVersion;
+   }
+
+   public final Object novaStaticSummary() {
+      return this.novaStaticSummary;
+   }
+
+   public final void novaSetStaticSummary(Object summary) {
+      this.novaStaticSummary = summary;
+   }
+
    protected void sort() {
       this.cardList.sort(COMPARATOR);
-      forge.game.card.TraitEpoch.bumpGlobal();
+      this.novaChanged();
    }
 
    public Zone(ZoneType zone0, Game game0) {
@@ -58,7 +86,7 @@ public class Zone implements Serializable, Iterable<Card> {
    public final void reorder(Card c, int index) {
       this.cardList.remove(c);
       this.cardList.add(index, c);
-      forge.game.card.TraitEpoch.bumpGlobal();
+      this.novaChanged();
    }
 
    public final void add(Card c) {
@@ -111,10 +139,10 @@ public class Zone implements Serializable, Iterable<Card> {
          if (this.zoneType == ZoneType.Battlefield || !c.isToken() || c.getCurrentStateName() == CardStateName.PreparedSpell || this.zoneType == ZoneType.Stack && c.getCopiedPermanent() != null) {
             if (index == null) {
                this.cardList.add(c);
-               forge.game.card.TraitEpoch.bumpGlobal();
+               this.novaChanged();
             } else {
                this.cardList.add(index, c);
-               forge.game.card.TraitEpoch.bumpGlobal();
+               this.novaChanged();
             }
          }
 
@@ -133,7 +161,7 @@ public class Zone implements Serializable, Iterable<Card> {
 
    public void remove(Card c) {
       if (this.cardList.remove(c)) {
-         forge.game.card.TraitEpoch.bumpGlobal();
+         this.novaChanged();
          this.onChanged();
          this.game.fireEvent(new GameEventZone(this.zoneType, this.getPlayer(), EventValueChangeType.Removed, c));
       }
@@ -142,12 +170,12 @@ public class Zone implements Serializable, Iterable<Card> {
 
    public final void setCards(Iterable<Card> cards) {
       this.cardList.clear();
-      forge.game.card.TraitEpoch.bumpGlobal();
+      this.novaChanged();
 
       for(Card c : cards) {
          c.setZone(this);
          this.cardList.add(c);
-         forge.game.card.TraitEpoch.bumpGlobal();
+         this.novaChanged();
       }
 
       this.onChanged();
@@ -157,7 +185,7 @@ public class Zone implements Serializable, Iterable<Card> {
    public final void removeAllCards(boolean forcedWithoutEvents) {
       if (forcedWithoutEvents) {
          this.cardList.clear();
-         forge.game.card.TraitEpoch.bumpGlobal();
+         this.novaChanged();
       } else {
          for(Card c : this.cardList) {
             this.remove(c);
@@ -202,6 +230,21 @@ public class Zone implements Serializable, Iterable<Card> {
       return getCardsAdded(this.cardsAddedThisTurn, origin);
    }
 
+   /**
+    * Forge Nova: {@code l = getCardsAddedThisTurn(null); l.sort(compareByGameTimestamp()); l.get(l.lastIndexOf(c))}
+    * without copying and sorting: of the entries equal to c, the one with the latest game timestamp (the sort
+    * is stable, so on a tie the later entry). Null when no entry equals c (the original then throws).
+    */
+   public final Card novaLastAddedThisTurn(Card c) {
+      Card best = null;
+      for (Card e : this.cardsAddedThisTurn.values()) {
+         if (c.equals(e) && (best == null || e.getGameTimestamp() >= best.getGameTimestamp())) {
+            best = e;
+         }
+      }
+      return best;
+   }
+
    public final List<Card> getCardsAddedLastTurn(ZoneType origin) {
       return getCardsAdded(this.cardsAddedLastTurn, origin);
    }
@@ -231,7 +274,7 @@ public class Zone implements Serializable, Iterable<Card> {
 
    public void shuffle() {
       Collections.shuffle(this.cardList, MyRandom.getRandom());
-      forge.game.card.TraitEpoch.bumpGlobal();
+      this.novaChanged();
       this.onChanged();
    }
 

@@ -82,7 +82,7 @@ public final class NovaServer {
         /** JSON API: /api/... (token already verified). Runs on a worker thread. */
         Response api(String method, String path, Map<String, String> query, String body);
 
-        /** Dynamic assets (/img, /avatar, /sleeve). Runs on a worker thread; may block (downloads). */
+        /** Dynamic assets (/img, /achv, /avatar, /sleeve). Runs on a worker thread; may block (downloads). */
         Response asset(String path, Map<String, String> query);
 
         /** A message from the local WebSocket client (network thread). */
@@ -412,7 +412,7 @@ public final class NovaServer {
                 return;
             }
 
-            if (path.equals("/img") || path.startsWith("/avatar/") || path.startsWith("/sleeve/")) {
+            if (path.equals("/img") || path.equals("/achv") || path.startsWith("/avatar/") || path.startsWith("/sleeve/")) {
                 final Map<String, String> query = flatten(qs);
                 onWorker(ctx, req, () -> handler.asset(path, query));
                 return;

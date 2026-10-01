@@ -15,6 +15,9 @@ public class StaticAbilityTurnPhaseReversed {
    }
 
    protected static boolean anyTurnPhaseReversed(Player player, StaticAbilityMode mode) {
+      if (!StaticAbilityModeRegistry.mayExist(mode)) {
+         return false; // Forge Nova: no static ability of this mode exists anywhere
+      }
       boolean result = false;
       Game game = player.getGame();
 

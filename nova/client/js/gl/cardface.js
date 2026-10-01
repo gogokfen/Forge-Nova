@@ -1,6 +1,8 @@
 // @ts-check
 // Procedural card faces (Canvas2D), used while images load or when no image exists.
 
+import { shortNum } from '../store.js';
+
 const FRAME = {
   W: ['#f4efdc', '#d9d1b3'], U: ['#5fa2de', '#2c5f96'], B: ['#6c6266', '#2c2629'], R: ['#e58064', '#a8412a'],
   G: ['#6dbb82', '#2f6d41'], M: ['#e7cf86', '#b28a38'], C: ['#b9c0c6', '#7d858c'], L: ['#b39f7c', '#6d5c40'],
@@ -173,7 +175,7 @@ export function drawCardFace(ctx, card, w, h) {
   }
 
   // P/T or loyalty
-  const stat = card.pow !== undefined ? `${card.pow}/${card.tou}` : card.loy ? card.loy : card.def ? card.def : '';
+  const stat = card.pow !== undefined ? `${shortNum(card.pow)}/${shortNum(card.tou)}` : card.loy ? card.loy : card.def ? card.def : '';
   if (stat) {
     const bwid = 50 * s, bh = 24 * s;
     const bx = w - pad - bwid + 4 * s, by = h - pad - bh + 2 * s;

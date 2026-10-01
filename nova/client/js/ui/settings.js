@@ -26,6 +26,12 @@ export const settings = {
   handSort: false,
   /** auto-sort rules, see board/handsort.js (null: the default order) */
   handSortRules: null,
+  /** mark the cards you can play right now (the host works them out when you get priority) */
+  playable: true,
+  /** keyboard shortcuts by action, see ui/keys.js (null: the defaults) */
+  keys: null,
+  /** die rolls are shown as dice rolling across the window (off: just the result) */
+  diceAnim: true,
   ...load(),
 };
 

@@ -11,11 +11,17 @@ const GAP = 0.06; // gap between items, in card heights
 /**
  * @typedef {{key:string, cardId:number, x:number, y:number, w:number, h:number, rot:number, z:number,
  *   tex?:string, face?:any, pile?:number[], count?:number, zone?:string, owner?:number, interactive:boolean,
- *   role:string, alpha?:number, stackItem?:any, slotX?:number}} Target
+ *   role:string, alpha?:number, stackItem?:any, slotX?:number, tray?:boolean}} Target
  */
 
 function isCreatureRow(c) { return (c.tf & TF.CREATURE) || (c.tf & TF.PW) || (c.tf & TF.BATTLE); }
 function isLandRow(c) { return (c.tf & TF.LAND) && !(c.tf & TF.CREATURE); }
+
+/**
+ * Attached cards (equipment, auras...) sit side by side behind their host, each showing a strip this wide
+ * (in card heights) to its right; with many of them the strips narrow so the group stays compact.
+ */
+export function attachStep(n) { return n <= 4 ? 0.2 : Math.max(0.1, 0.8 / n); }
 
 export function textureKeyOf(c, ownerSleeve) {
   if (c.hid && !c.img) return 'sleeve:' + ownerSleeve;
@@ -51,7 +57,7 @@ function makeItems(cards, sel) {
     const top = it.cards[0];
     const tapped = !!top.tap;
     const pileExtra = Math.min(it.cards.length - 1, 3) * 0.05;
-    const attExtra = it.attach.length * 0.13;
+    const attExtra = it.attach.length * attachStep(it.attach.length);
     it.fw = (tapped ? 1 : CARD_RATIO) + pileExtra + attExtra;
   }
   return items;
@@ -124,14 +130,16 @@ function tableRegions(me, others, playW, fieldH) {
 
 /**
  * @param {{w:number,h:number, sideW:number, hoverHand:number|null, focus:number|null, mode?:string,
- *   handSort?:boolean, handRules?:any, handDrag?:{id:number, x:number, y:number, index:number}|null}} ui
+ *   handSort?:boolean, handRules?:any, handDrag?:{id:number, x:number, y:number, index:number}|null,
+ *   panelH?:Map<number, number>}} ui panelH: the player panels' measured heights (they grow with mana, counters...)
  */
 export function computeLayout(ui) {
   const vw = ui.w, vh = ui.h;
   /** @type {Map<string, Target>} */
   const targets = new Map();
   const decor = [];
-  const hud = { regions: /** @type {any[]} */ ([]), phase: { x: 0, y: 0 }, prompt: { x: 0, y: 0, w: 300 }, stack: /** @type {any[]} */ ([]), hand: { x: 0, y: 0, w: 0, h: 0 } };
+  const hud = { regions: /** @type {any[]} */ ([]), phase: { x: 0, y: 0 }, prompt: { x: 0, y: 0, w: 300 }, stack: /** @type {any[]} */ ([]),
+    hand: { x: 0, y: 0, w: 0, h: 0 }, fieldH: 0 };
   const order = store.order.filter((id) => store.players.has(id));
   if (!order.length) return { targets, decor, hud };
 
@@ -144,6 +152,9 @@ export function computeLayout(ui) {
   const others = order.filter((id) => id !== me);
   const sel = store.sel;
   let z = 0;
+  /** my commanders in the command zone (shown in a tray left of my hand) */
+  let myTray = /** @type {any[]} */ ([]);
+  hud.fieldH = fieldH;
 
   // ---- regions
   const regions = ui.mode === 'table' ? tableRegions(me, others, playW, fieldH) : rowRegions(me, others, playW, fieldH, ui.focus);
@@ -157,8 +168,11 @@ export function computeLayout(ui) {
     if (!p) continue;
     const sleeve = p.sl ?? 0;
     const pad = 8;
-    const panelH = 104;
-    const panel = { x: R.x + pad, y: R.top ? R.y + pad : R.y + R.h - panelH - pad };
+    // the player panel sits in the corner of the region farthest from the table center: at the top of a
+    // strip above me, at the bottom of mine (there it grows upward, never into the hand)
+    const panelH = ui.panelH?.get(R.pid) || 104;
+    const panelTop = R.top ? R.y + pad : R.y + R.h - pad - panelH;
+    const panel = { x: R.x + pad, y: panelTop, h: panelH, anchor: R.top ? 'top' : 'bottom', edge: R.top ? R.y + pad : R.y + R.h - pad };
     const reg = { ...R, panel, piles: /** @type {any} */ ({}) };
     hud.regions.push(reg);
 
@@ -168,26 +182,47 @@ export function computeLayout(ui) {
     const maxH = Math.min(vh * (others.length > 1 ? 0.2 : 0.23), 210);
     let h = Math.min(maxH, (innerH / nRows) * 0.9);
 
-    // ---- zone piles on the right (library, graveyard, exile)
-    const pileH = Math.max(46, Math.min(h * 0.8, nRows === 1 ? innerH * 0.8 : innerH / 3 - 8));
+    // ---- the command zone: my commanders wait in a tray beside my hand; everything else there
+    // (opponents' commanders, emblems, effects) is a pile next to the library
+    const command = zoneCards(p, 'Command');
+    const tray = R.pid === me && hasHand ? command.filter((c) => c.cmd) : [];
+    if (tray.length) myTray = tray;
+    const cmdPile = tray.length ? command.filter((c) => !c.cmd) : command;
+    const showCmd = cmdPile.length > 0 || (!!store.game.cmdr && !(R.pid === me && hasHand));
+
+    // ---- zone piles on the right (library, graveyard, exile, command zone): a row in a short strip, else a
+    // column, or two columns when four piles in one would get too small
+    const pileSlots = showCmd ? ['Library', 'Graveyard', 'Exile', 'Command'] : ['Library', 'Graveyard', 'Exile'];
+    const nSlots = pileSlots.length;
+    const cols = nRows > 1 && nSlots === 4 && innerH / 4 - 8 < 64 ? 2 : 1;
+    const perCol = Math.ceil(nSlots / cols);
+    const pileH = Math.max(46, Math.min(h * 0.8, nRows === 1 ? innerH * 0.8 : innerH / perCol - 8));
     const pileW = pileH * CARD_RATIO;
-    const pileSlots = ['Library', 'Graveyard', 'Exile'];
-    const pilesAreaW = nRows === 1 ? pileSlots.length * (pileW + 8) + 8 : pileW + 20;
+    const pilesAreaW = nRows === 1 ? nSlots * (pileW + 8) + 8 : cols * (pileW + 8) + 12;
     pileSlots.forEach((zone, i) => {
       let px, py;
       if (nRows === 1) {
         px = R.x + R.w - pilesAreaW + 8 + i * (pileW + 8) + pileW / 2;
         py = innerTop + innerH / 2;
       } else {
-        px = R.x + R.w - pilesAreaW / 2;
-        const slotH = innerH / 3;
-        const idx = R.top ? i : 2 - i; // library farthest from the center
+        const col = i % cols, row = Math.floor(i / cols);
+        px = R.x + R.w - pilesAreaW + 10 + col * (pileW + 8) + pileW / 2;
+        const slotH = innerH / perCol;
+        const idx = R.top ? row : perCol - 1 - row; // library farthest from the center
         py = innerTop + slotH * idx + slotH / 2;
       }
-      reg.piles[zone] = { x: px, y: py, w: pileW, h: pileH, count: zoneCount(p, zone) };
-      decor.push({ type: 'slot', x: px, y: py, w: pileW, h: pileH, label: zone === 'Library' ? 'LIB' : zone === 'Graveyard' ? 'GY' : 'EX' });
-      const n = zoneCount(p, zone);
-      if (zone === 'Library') {
+      const n = zone === 'Command' ? cmdPile.length : zoneCount(p, zone);
+      reg.piles[zone] = { x: px, y: py, w: pileW, h: pileH, count: n };
+      decor.push({ type: 'slot', x: px, y: py, w: pileW, h: pileH, cmd: zone === 'Command',
+        label: zone === 'Library' ? 'LIB' : zone === 'Graveyard' ? 'GY' : zone === 'Exile' ? 'EX' : 'CMD' });
+      if (zone === 'Command') {
+        if (n) {
+          // a commander shows on top, else the newest emblem or effect
+          const top = cmdPile.find((c) => c.cmd) || cmdPile[n - 1];
+          targets.set('c' + top.id, { key: 'c' + top.id, cardId: top.id, x: px, y: py, w: pileW, h: pileH, rot: 0, z: z++,
+            tex: textureKeyOf(top, sleeve), face: top, interactive: true, role: 'zoneTop', zone, owner: R.pid, count: n });
+        }
+      } else if (zone === 'Library') {
         if (n > 0) {
           targets.set('lib' + R.pid, { key: 'lib' + R.pid, cardId: -1, x: px, y: py, w: pileW, h: pileH, rot: 0, z: z++,
             tex: 'sleeve:' + sleeve, interactive: true, role: 'library', owner: R.pid, count: n });
@@ -208,42 +243,59 @@ export function computeLayout(ui) {
     });
 
     // ---- battlefield rows
-    const fieldX = R.x + PANEL_W + pad * 2;
-    const fieldW = Math.max(80, R.w - PANEL_W - pad * 3 - pilesAreaW);
+    // A row level with the player panel starts right of it; a row clear of it (above or below) may also use
+    // the space over the panel, so a crowded row gets more room. No card ever goes under the panel.
+    const endX = R.x + R.w - pad - pilesAreaW;
+    const narrowX = R.x + PANEL_W + pad * 2;
+    const narrowW = Math.max(80, endX - narrowX);
+    const fullX = R.x + pad;
+    const fullW = Math.max(narrowW, endX - fullX);
     const bf = zoneCards(p, 'Battlefield').filter((c) => c.at == null || !store.cards.has(c.at));
-    const cmd = zoneCards(p, 'Command');
-    const rows = rowsFor(bf, nRows).map((cs) => makeItems(cs, sel));
-    // command zone objects lead the row farthest from the table center
-    if (cmd.length) {
-      const cmdItems = cmd.map((c) => ({ cards: [c], attach: [], fw: CARD_RATIO * 0.85, cmd: true }));
-      rows[rows.length - 1] = cmdItems.concat(rows[rows.length - 1]);
-    }
-    // uniform card height for the region: fit the widest row (down to a floor, then overlap)
-    for (const items of rows) {
-      if (!items.length) continue;
-      const units = items.reduce((a, it) => a + it.fw, 0) + GAP * (items.length - 1);
-      h = Math.min(h, fieldW / units);
-    }
-    const minH = nRows === 1 ? Math.min(innerH * 0.8, 74) : 70;
-    h = Math.max(h, Math.min(minH, (innerH / nRows) * 0.9));
-    const w = h * CARD_RATIO;
     const rowH = innerH / nRows;
-
-    rows.forEach((items, ri) => {
-      if (!items.length) return;
+    const rowInfo = rowsFor(bf, nRows).map((cs, ri) => {
+      const items = makeItems(cs, sel);
       // row 0 (creatures) is nearest the table center
       const slot = R.top ? nRows - 1 - ri : ri;
       const cy = innerTop + rowH * slot + rowH / 2;
-      // natural width; if it doesn't fit, advances shrink so the last item ends at the edge (overlap)
+      // the tallest cards that stay clear of the panel (6 px apart; pile members sit up to 0.09 h higher)
+      const clearH = R.top ? (cy - 6 - (panelTop + panelH)) / 0.59 : 2 * (panelTop - 6 - cy);
+      const units = items.reduce((a, it) => a + it.fw, 0) + GAP * Math.max(0, items.length - 1);
+      return { items, cy, clearH, units };
+    });
+    // uniform card height for the region: fit the widest row (down to a floor, then overlap). Which rows may
+    // use the full width depends on the height, so: fit with the rows clear even at full size, then let the
+    // rows that are clear at that height use the full width too, as long as they stay clear.
+    const fit = (hh, fullFrom) => {
+      let out = hh, cap = Infinity;
+      for (const r of rowInfo) {
+        if (!r.items.length) continue;
+        const full = r.clearH >= fullFrom;
+        out = Math.min(out, (full ? fullW : narrowW) / r.units);
+        if (full) cap = Math.min(cap, r.clearH);
+      }
+      return Math.min(out, cap);
+    };
+    const h1 = fit(h, h);
+    h = Math.max(h1, fit(h, h1));
+    const minH = nRows === 1 ? Math.min(innerH * 0.8, 74) : 70;
+    h = Math.max(h, Math.min(minH, rowH * 0.9));
+    const w = h * CARD_RATIO;
+
+    rowInfo.forEach(({ items, cy, clearH }) => {
+      if (!items.length) return;
+      const full = clearH >= h;
+      // natural width. A row that fits beside the panel stays centered there; a longer one that is clear of the
+      // panel grows to the left over it; if it still doesn't fit, advances shrink so it ends at the edge (overlap)
       const gapPx = GAP * h;
       const foot = items.map((it) => it.fw * h);
       const natural = foot.reduce((a, b) => a + b, 0) + gapPx * (items.length - 1);
+      const startX = full ? fullX : narrowX, roomW = full ? fullW : narrowW;
       let k = 1;
-      let x = fieldX + (fieldW - natural) / 2;
-      if (natural > fieldW) {
+      let x = natural <= narrowW ? narrowX + (narrowW - natural) / 2 : Math.max(startX, endX - natural);
+      if (natural > roomW) {
         const lead = natural - foot[foot.length - 1];
-        k = lead > 0 ? (fieldW - foot[foot.length - 1]) / lead : 1;
-        x = fieldX;
+        k = lead > 0 ? (roomW - foot[foot.length - 1]) / lead : 1;
+        x = startX;
       }
       items.forEach((it, idx) => {
         const top = it.cards[0];
@@ -257,14 +309,19 @@ export function computeLayout(ui) {
         else if (top.blk) cyy += forward * h * 0.08;
         const rot = tapped ? Math.PI / 2 : 0;
         const tex = textureKeyOf(top, sleeve);
-        // attachments peek out behind the host
-        it.attach.forEach((aid, ai) => {
+        // attached cards stand side by side behind the host, each peeking out a strip further right
+        // (the first attached nearest); they stay within the item's footprint, so nothing else is covered
+        const na = it.attach.length;
+        const step = attachStep(na) * h;
+        for (let ai = na - 1; ai >= 0; ai--) {
+          const aid = it.attach[ai];
           const a = store.cards.get(aid);
-          if (!a) return;
-          const off = (it.attach.length - ai) * 0.13 * h;
-          targets.set('c' + aid, { key: 'c' + aid, cardId: aid, x: cx + off, y: cyy + forward * -off * 0.9, w, h, rot: a.tap ? Math.PI / 2 : 0,
-            z: z++, tex: textureKeyOf(a, sleeve), face: a, interactive: true, role: 'attached', owner: R.pid, zone: 'Battlefield' });
-        });
+          if (!a) continue;
+          const aw = a.tap ? h : w;
+          const right = x + cardFoot + (ai + 1) * step;
+          targets.set('c' + aid, { key: 'c' + aid, cardId: aid, x: right - aw / 2, y: cyy, w, h, rot: a.tap ? Math.PI / 2 : 0,
+            z: z++, tex: textureKeyOf(a, store.players.get(a.o)?.sl ?? sleeve), face: a, interactive: true, role: 'attached', owner: R.pid, zone: 'Battlefield' });
+        }
         // pile members below the top card
         const n = it.cards.length;
         for (let k = n - 1; k >= 1; k--) {
@@ -273,8 +330,8 @@ export function computeLayout(ui) {
           targets.set('c' + m.id, { key: 'c' + m.id, cardId: m.id, x: cx + d, y: cyy - d * 0.6, w, h, rot, z: z++,
             tex, face: m, interactive: false, role: 'pileMember', owner: R.pid, zone: 'Battlefield' });
         }
-        targets.set('c' + top.id, { key: 'c' + top.id, cardId: top.id, x: cx, y: cyy, w: it.cmd ? w * 0.85 : w, h: it.cmd ? h * 0.85 : h, rot, z: z++,
-          tex, face: top, interactive: true, role: it.cmd ? 'command' : 'battlefield', owner: R.pid, zone: it.cmd ? 'Command' : 'Battlefield',
+        targets.set('c' + top.id, { key: 'c' + top.id, cardId: top.id, x: cx, y: cyy, w, h, rot, z: z++,
+          tex, face: top, interactive: true, role: 'battlefield', owner: R.pid, zone: 'Battlefield',
           pile: n > 1 ? it.cards.map((c) => c.id) : undefined, count: n > 1 ? n : undefined });
         x += (foot[idx] + gapPx) * k;
       });
@@ -296,14 +353,31 @@ export function computeLayout(ui) {
     const hh = handH * 0.98;
     const hw = hh * CARD_RATIO;
     const promptW = 300;
-    const areaX = 12, areaW = playW - promptW - 36;
+    let areaX = 12, areaW = playW - promptW - 36;
+    const sleeve = p?.sl ?? 0;
+    // my commanders in the command zone: a tray at the left of the hand, set apart from it
+    if (myTray.length) {
+      const cw = hw * 0.94, ch = hh * 0.94, gap = 10, padX = 12;
+      const trayW = myTray.length * cw + (myTray.length - 1) * gap + padX * 2;
+      decor.push({ type: 'cmdTray', x: areaX + trayW / 2, y: vh - handH / 2 + 4, w: trayW, h: handH - 4 });
+      myTray.forEach((c, i) => {
+        const hov = !ui.handDrag && ui.hoverHand === c.id;
+        // (a raised card grows; it moves right a little so it stays on the screen)
+        const x = areaX + padX + cw / 2 + i * (cw + gap) + (hov ? cw * 0.17 : 0);
+        const y = hov ? vh - hh * 0.62 : vh - handH / 2 + 10;
+        const scale = hov ? 1.32 : 1;
+        targets.set('c' + c.id, { key: 'c' + c.id, cardId: c.id, x, y, w: cw * scale, h: ch * scale, rot: 0, z: hov ? 100000 : 49000 + i,
+          tex: textureKeyOf(c, sleeve), face: c, interactive: true, role: 'command', tray: true, owner: me, zone: 'Command' });
+      });
+      areaX += trayW + 22;
+      areaW -= trayW + 22;
+    }
     hud.hand = { x: areaX, y: vh - handH, w: areaW, h: handH };
     const n = hand.length;
     const step = n > 1 ? Math.min(hw * 0.94, (areaW - hw) / (n - 1)) : 0;
     const total = hw + step * Math.max(0, n - 1);
     const startX = areaX + (areaW - total) / 2 + hw / 2;
     const mid = (n - 1) / 2;
-    const sleeve = p?.sl ?? 0;
     hand.forEach((c, i) => {
       const hov = !drag && ui.hoverHand === c.id;
       const off = i - mid;

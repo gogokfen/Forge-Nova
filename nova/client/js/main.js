@@ -1,7 +1,7 @@
 // @ts-check
 // Forge Nova client bootstrap: connection, screens, frame loop, input.
 
-import { connect, on, send, guestRoom, isServedGuest, leaveRoom, CLOSE } from './net.js';
+import { connect, on, send, api, guestRoom, isServedGuest, leaveRoom, CLOSE } from './net.js';
 import { store, subscribe, resetMatch, localPlayer } from './store.js';
 import { Renderer } from './gl/renderer.js';
 import { CardTextures } from './gl/textures.js';
@@ -48,6 +48,8 @@ const home = () => (inRoom ? 'room' : 'lobby');
 function showScreen(name, arg = null) {
   screen = name;
   boot.classList.add('hidden');
+  // Discord's "now playing" follows the menu and the deck builder (matches report themselves on the host)
+  if (!isServedGuest() && name !== 'match' && name !== 'join') api('discord/screen', { screen: name }).catch(() => {});
   if (name !== 'builder') builder?.hide();
   if (name !== 'room') room.hide();
   if (name !== 'join') joinScreen.hide();
@@ -129,14 +131,21 @@ function ensureGame() {
   const scene = new Scene(renderer, textures, font);
   const hud = new Hud($('hud'));
   hud.setSideVisible(settings.side);
+  hud.onPanelResize = () => g.relayout();
   onSetting((key, v) => {
     if (key === 'side') hud.setSideVisible(v);
     if (key === 'perf') hud.setPerfVisible(v);
     if (key === 'side' || key === 'layout' || key === 'handSort' || key === 'handSortRules') g.relayout();
+    if (key === 'playable') {
+      if (store.inMatch) send({ t: 'uiPrefs', playable: !!v });
+      g.dirty = true;
+    }
   });
+  // the host marks the cards we can play only if we want that
+  on('match', () => send({ t: 'uiPrefs', playable: !!settings.playable }));
   /** layout inputs that come from the UI state rather than the game */
   const uiState = () => ({ w: renderer.width, h: renderer.height, sideW: settings.side ? 320 : 0, hoverHand: g.hoverHand, focus: g.focus,
-    mode: settings.layout, handSort: settings.handSort, handRules: settings.handSortRules, handDrag: g.handDrag });
+    mode: settings.layout, handSort: settings.handSort, handRules: settings.handSortRules, handDrag: g.handDrag, panelH: hud.panelHeights });
   const arrows = new Arrows(fxCanvas, scene, (pid) => hud.panelCenter(pid));
   Object.assign(g, { textures, font, scene, hud, arrows });
   game = g;
@@ -254,7 +263,8 @@ function ensureGame() {
     if (s !== scene.hover) {
       scene.hover = s;
       g.dirty = true;
-      const handId = s && s.t.role === 'hand' ? s.t.cardId : null;
+      // hand cards and my commanders in their tray rise when pointed at
+      const handId = s && (s.t.role === 'hand' || s.t.tray) ? s.t.cardId : null;
       if (handId !== g.hoverHand) { g.hoverHand = handId; g.relayout(); }
       if (s) {
         const card = s.t.cardId >= 0 ? store.cards.get(s.t.cardId) : null;
@@ -302,8 +312,11 @@ function ensureGame() {
     if (s.t.role === 'zoneTop' || s.t.role === 'library') { openZone(s.t.owner, s.t.zone || 'Library'); return; }
     if (s.t.cardId >= 0) send({ t: 'card', id: s.t.cardId, btn: 3, x: e.clientX, y: e.clientY });
   });
-  // mouse wheel over an opponent strip enlarges it (multiplayer focus, Rows layout)
+  // mouse wheel over a card scrolls its text in the side panel (when it doesn't fit there); elsewhere over an
+  // opponent strip it enlarges that strip (multiplayer focus, Rows layout)
   canvas.addEventListener('wheel', (e) => {
+    const s = pickAt(e);
+    if (s && (s.t.cardId >= 0 || s.t.stackItem) && hud.scrollDetail(e)) return;
     if (!scene.layout || store.order.length < 3 || settings.layout !== 'rows') return;
     const reg = scene.layout.hud.regions.find((r) => e.clientY >= r.y && e.clientY < r.y + r.h && e.clientX < r.x + r.w);
     if (!reg || reg.pid === store.local[0]) return;
@@ -502,6 +515,16 @@ on('_roomLeft', () => {
   resetChat();
   resetMatch();
   if (screen !== 'lobby') showScreen('lobby');
+});
+
+// a Moxfield sync wrote deck files: lists show them, an unchanged copy open in the deck builder is reloaded
+window.addEventListener('nova:decks-changed', (e) => {
+  lobby.data = null;
+  room.decks = null;
+  room.localDecks = null;
+  if (screen === 'lobby') lobby.show();
+  else if (screen === 'room') room.show();
+  builder?.onDecksChanged(/** @type {CustomEvent} */ (e).detail || []);
 });
 
 window.addEventListener('error', (e) => toast('Client error: ' + e.message, 'error'));

@@ -31,8 +31,20 @@ function load(url) {
   return p;
 }
 
+/**
+ * When each sound was last asked for. The engine asks once per card: drawing three cards (or three creatures
+ * dying together) would start the same sound three times at once, one very loud blast. A sound asked for again
+ * within BURST_MS of the last request is part of the same burst and plays only once.
+ */
+const lastAsked = new Map();
+const BURST_MS = 200;
+
 on('sound', async (m) => {
   if (!audioPrefs.sounds) return;
+  const now = performance.now();
+  const prev = lastAsked.get(m.url);
+  lastAsked.set(m.url, now);
+  if (prev !== undefined && now - prev < BURST_MS) return;
   const buf = await load(m.url);
   if (!buf) return;
   const a = ac();

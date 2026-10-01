@@ -6,6 +6,7 @@ import { api, send, on, guestRoom, isServedGuest, parseInvite, joinRoom, leaveRo
 import { esc, el, pipsHtml, toast } from './text.js';
 import { modal } from './dialogs.js';
 import { FORMATS, formatOf, GEN_CMDR, GEN_CONS, deckArt, deckFits, pickDeckDialog } from './decks.js';
+import { HOUSE_RULES } from './house.js';
 
 const LIFE_PRESETS = [20, 25, 30, 40];
 const MAX_PLAYERS = 8;
@@ -198,7 +199,7 @@ export async function openOnlineDialog(lobby) {
     resetChat();
     try {
       await api('room/open', {
-        name: nm, port, upnp, format: cfg.format, life: cfg.life ?? null, games: cfg.games, shareDecks: true,
+        name: nm, port, upnp, format: cfg.format, life: cfg.life ?? null, games: cfg.games, shareDecks: true, freeMulligan: !!cfg.house?.freeMulligan,
         hostDeck: hostDeck ? { src: hostDeck.src, name: hostDeck.name } : undefined, seats,
       });
       dlg.close();
@@ -264,7 +265,7 @@ export class JoinScreen {
     const name = load('nova-guest-name', '') || ownName;
     const full = !i.inGame && i.open === 0;
     this.root.innerHTML = `<div class="join-wrap"><div class="card-panel join-card">
-      <div class="logo"><span class="logo-gem"></span>Forge <b>Nova</b></div>
+      <div class="logo"><span class="logo-icon"></span>Forge <b>Nova</b></div>
       <h2>${esc(i.hostName || 'A friend')} invites you to play</h2>
       <div class="sub">${esc(f.t)} · ${i.players || '?'} players${i.inGame ? ' · a game is running' : ` · ${i.open} open seat${i.open === 1 ? '' : 's'}`}</div>
       ${i.inGame ? '<p class="note">A game is in progress. You can join as soon as it ends.</p>' : full ? '<p class="note">All seats are taken right now.</p>' : `
@@ -516,7 +517,7 @@ export class RoomScreen {
 
     // ---- header
     const title = host ? 'Your online room' : `${esc(st.hostName)}'s room`;
-    this.part('head', `<div><div class="logo"><span class="logo-gem"></span>Forge <b>Nova</b><span class="room-tag">Online</span></div>
+    this.part('head', `<div><div class="logo"><span class="logo-icon"></span>Forge <b>Nova</b><span class="room-tag">Online</span></div>
         <div class="sub">${title} · ${esc(f.t)} · ${st.seats.length} players · ${life} life</div></div>
       <div style="display:flex;gap:8px">${!isServedGuest() ? '<button class="btn" data-builder title="Build and edit your decks">Deck Builder</button>' : ''}
         <button class="btn ghost" data-options title="Options (Esc)">Options</button>
@@ -593,7 +594,8 @@ export class RoomScreen {
     if (!host) {
       return `<h3>Game</h3><div class="settings-grid room-facts">
         <span>Format</span><b>${esc(f.t)}</b><span>Starting life</span><b>${life}</b>
-        <span>Games per match</span><b>${st.games}</b><span>Host's decks</span><b>${st.shareDecks ? 'shared' : 'not shared'}</b></div>`;
+        <span>Games per match</span><b>${st.games}</b><span>Host's decks</span><b>${st.shareDecks ? 'shared' : 'not shared'}</b>
+        <span title="${esc(HOUSE_RULES[0][2])}">Free mulligan on 0 or 7 lands</span><b>${st.freeMulligan ? 'on' : 'off'}</b></div>`;
     }
     return `<h3>Game</h3>
       <div class="setup-label">Format</div>
@@ -603,7 +605,8 @@ export class RoomScreen {
         <input class="life-in" type="number" min="1" max="999" value="${life}" data-life title="Any starting life for every player"></div>
       <div class="life-note">${st.life == null ? `${esc(f.t)} default for ${st.seats.length} players` : `Custom · <a href="#" data-life-reset>use the default (${lifeDefault})</a>`}</div>
       <div class="field-row"><span>Games per match</span><div class="seg">${[1, 3, 5].map((n) => `<button class="${st.games === n ? 'sel' : ''}" data-games="${n}">${n}</button>`).join('')}</div></div>
-      <div class="field-row"><span title="Friends may play one of your decks">Let friends use my decks</span><div class="switch ${st.shareDecks ? 'on' : ''}" data-share></div></div>`;
+      <div class="field-row"><span title="Friends may play one of your decks">Let friends use my decks</span><div class="switch ${st.shareDecks ? 'on' : ''}" data-share></div></div>
+      <div class="field-row" title="${esc(HOUSE_RULES[0][2])}"><span>House rule: free mulligan on 0 or 7 lands</span><div class="switch ${st.freeMulligan ? 'on' : ''}" data-freemull></div></div>`;
   }
 
   bindSettings(box, st) {
@@ -619,6 +622,7 @@ export class RoomScreen {
     box.querySelector('[data-life-reset]')?.addEventListener('click', (e) => { e.preventDefault(); set({ life: null }); });
     box.querySelectorAll('[data-games]').forEach((b) => b.addEventListener('click', () => set({ games: Number(/** @type {HTMLElement} */ (b).dataset.games) })));
     box.querySelector('[data-share]')?.addEventListener('click', () => set({ shareDecks: !st.shareDecks }));
+    box.querySelector('[data-freemull]')?.addEventListener('click', () => set({ freeMulligan: !st.freeMulligan }));
   }
 
   // ------------------------------------------------------------------ seats

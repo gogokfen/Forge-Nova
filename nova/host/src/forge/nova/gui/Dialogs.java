@@ -86,7 +86,6 @@ public final class Dialogs {
 
     private void writeItem(JsonOut o, Object item, Function<Object, String> display) {
         o.beginObj();
-        o.put("label", label(item, display));
         CardView cv = null;
         if (item instanceof CardView c) {
             cv = c;
@@ -102,13 +101,23 @@ public final class Dialogs {
         }
         if (cv != null) {
             boolean canView = cv.getId() < 0 || mayView.test(cv);
+            // a card's label is its name (CardView.toString): not for a card this player may not see
+            o.put("label", canView ? label(item, display) : hiddenLabel(cv));
             CardJson.writeDialogCard(o, cv, viewers, canView);
         } else if (item instanceof PlayerView pv) {
+            o.put("label", label(item, display));
             o.put("player", pv.getId());
-        } else if (item instanceof PaperCard pc) {
-            CardJson.writePaperCard(o, pc);
+        } else {
+            o.put("label", label(item, display));
+            if (item instanceof PaperCard pc) {
+                CardJson.writePaperCard(o, pc);
+            }
         }
         o.endObj();
+    }
+
+    private static String hiddenLabel(CardView cv) {
+        return cv.isFaceDown() ? "Face-down card" : "Hidden card";
     }
 
     @SuppressWarnings("unchecked")
@@ -280,6 +289,29 @@ public final class Dialogs {
     }
 
     /**
+     * A number from min to max (max Integer.MAX_VALUE: no limit), e.g. X of a spell: − / + buttons and a Max button.
+     * {@code afford} >= 0: the most the player's mana can pay; {@code manaCost}: the cost X is part of ("{X}{R}").
+     * Returns null when cancelled.
+     */
+    public Integer number(String message, int min, int max, int afford, String manaCost) {
+        JsonElement reply = ask("number", o -> {
+            o.put("title", message == null ? "" : message);
+            o.put("min", min);
+            if (max != Integer.MAX_VALUE) o.put("max", max);
+            if (afford >= 0) o.put("afford", afford);
+            o.putOpt("cost", manaCost);
+        });
+        if (reply == null || reply.isJsonNull()) {
+            return null;
+        }
+        try {
+            return Math.max(min, Math.min(max, reply.getAsInt()));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * A notice that needs no answer (an earned achievement, an error report): shown as a toast, so the
      * UI thread that raised it never waits for a click.
      */
@@ -293,11 +325,60 @@ public final class Dialogs {
     }
 
     public void message(String message, String title, boolean error) {
+        message(message, title, error, null);
+    }
+
+    /** A message; {@code dice}: it reports a die roll, which the client shows rolling (unless that's switched off). */
+    void message(String message, String title, boolean error, DiceRolls dice) {
         ask("message", o -> {
             o.put("title", title == null ? "" : title);
             o.put("message", message == null ? "" : message);
             o.flag("error", error);
+            if (dice != null) {
+                dice.write(o, "dice");
+            }
         });
+    }
+
+    /** The scry / surveil window's answer: the cards for the top of the library and for the other place, each in order. */
+    public record Arranged(List<CardView> top, List<CardView> other) {
+    }
+
+    /**
+     * Scry or surveil: only the cards looked at. Each goes on top of the library or to {@code other} ("bottom": the
+     * bottom of the library, "graveyard"); the top ones in the chosen order (first = top card), the bottom ones too
+     * (first = the highest of them). Returns null when the window was closed without an answer.
+     */
+    public Arranged scry(String title, String other, List<CardView> cards) {
+        JsonElement reply = ask("scry", o -> {
+            o.put("title", title == null ? "" : title);
+            o.put("other", other);
+            o.beginArr("items");
+            for (CardView c : cards) {
+                boolean canView = mayView.test(c);
+                o.beginObj();
+                o.put("label", canView ? c.getName() : hiddenLabel(c));
+                CardJson.writeDialogCard(o, c, viewers, canView);
+                o.endObj();
+            }
+            o.endArr();
+        });
+        if (reply == null || !reply.isJsonObject()) {
+            return null;
+        }
+        JsonObject ro = reply.getAsJsonObject();
+        List<CardView> top = new ArrayList<>();
+        List<CardView> rest = new ArrayList<>();
+        for (int i : indices(ro.get("top"))) {
+            if (i >= 0 && i < cards.size() && !top.contains(cards.get(i))) top.add(cards.get(i));
+        }
+        for (int i : indices(ro.get("other"))) {
+            if (i >= 0 && i < cards.size() && !top.contains(cards.get(i)) && !rest.contains(cards.get(i))) rest.add(cards.get(i));
+        }
+        for (CardView c : cards) {
+            if (!top.contains(c) && !rest.contains(c)) top.add(c); // a card the answer left out stays on top
+        }
+        return new Arranged(top, rest);
     }
 
     /** Combat damage assignment; returns damage per blocker (key null => defender for trample). */
@@ -408,10 +489,11 @@ public final class Dialogs {
             o.flag("toTop", toTop).flag("toBottom", toBottom).flag("toAnywhere", toAnywhere);
             o.beginArr("items");
             for (CardView c : cards) {
+                boolean canView = mayView.test(c);
                 o.beginObj();
-                o.put("label", c.toString());
+                o.put("label", canView ? c.toString() : hiddenLabel(c));
                 o.flag("movable", manipulable.contains(c));
-                CardJson.writeDialogCard(o, c, viewers, mayView.test(c));
+                CardJson.writeDialogCard(o, c, viewers, canView);
                 o.endObj();
             }
             o.endArr();

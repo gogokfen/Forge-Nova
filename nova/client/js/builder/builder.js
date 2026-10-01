@@ -7,6 +7,7 @@ import { modal } from '../ui/dialogs.js';
 import { catalog, loadCatalog, filterCards, sortCards, rankByName, SORTS, T, CMD, isLegal, findCard } from './catalog.js';
 import { DeckModel, FORMATS, checkDeck, deckStats, groupOf, TYPE_GROUPS } from './deck.js';
 import { openDeckBrowser, openImport, openExport, openBasicLands, openSampleHand, confirmBox, choose, askName, cardTile } from './dialogs.js';
+import { openExternal } from '../ui/moxfield.js';
 
 const UI_KEY = 'nova-builder-ui';
 const DRAFT_KEY = 'nova-builder-draft';
@@ -129,10 +130,11 @@ export class Builder {
     this.mounted = true;
     this.root.innerHTML = `
       <div class="bd-top">
-        <div class="bd-title"><span class="logo-gem"></span>Deck Builder</div>
+        <div class="bd-title"><span class="logo-icon"></span>Deck Builder</div>
         <input class="bd-name" data-name placeholder="Untitled deck" maxlength="120" spellcheck="false" title="Deck name">
         <select class="bd-fmt" data-fmt title="Format">${Object.entries(FORMATS).map(([k, f]) => `<option value="${k}">${esc(f.t)}</option>`).join('')}</select>
         <button class="bd-status" data-status title="Deck checks"></button>
+        <button class="btn ghost small hidden" data-moxlink title="This deck is synced from Moxfield: edit it there, and the sync brings the changes here">Moxfield ↗</button>
         <span class="bd-sp"></span>
         <button class="btn ghost small" data-undo title="Undo (Ctrl+Z)">↶</button>
         <button class="btn ghost small" data-redo title="Redo (Ctrl+Y)">↷</button>
@@ -163,7 +165,7 @@ export class Builder {
       </div>`;
     const q = (s) => /** @type {HTMLElement} */ (this.root.querySelector(s));
     this.el = {
-      name: q('[data-name]'), fmt: q('[data-fmt]'), status: q('[data-status]'), undo: q('[data-undo]'), redo: q('[data-redo]'), save: q('[data-save]'),
+      name: q('[data-name]'), fmt: q('[data-fmt]'), status: q('[data-status]'), undo: q('[data-undo]'), redo: q('[data-redo]'), save: q('[data-save]'), moxlink: q('[data-moxlink]'),
       cat: q('.bd-cat'), dcount: q('[data-dcount]'), dbody: q('[data-dbody]'), dfoot: q('[data-dfoot]'), group: q('[data-group]'), dview: q('[data-dview]'),
       sbody: q('[data-sbody]'), tabs: q('.bd-tabs'), notes: q('[data-notes]'),
     };
@@ -176,6 +178,7 @@ export class Builder {
     });
     E.fmt.addEventListener('change', () => this.setFormat(/** @type {HTMLSelectElement} */ (E.fmt).value));
     E.status.addEventListener('click', () => this.setTab('checks'));
+    E.moxlink.addEventListener('click', () => { if (this.deck.source) openExternal(this.deck.source); });
     E.undo.addEventListener('click', () => this.deck.undo());
     E.redo.addEventListener('click', () => this.deck.redo());
     q('[data-new]').addEventListener('click', () => this.newDeck());
@@ -256,6 +259,7 @@ export class Builder {
     /** @type {HTMLButtonElement} */ (E.redo).disabled = !d.redoStack.length;
     E.save.textContent = d.dirty ? 'Save*' : 'Saved';
     E.save.classList.toggle('primary', d.dirty);
+    E.moxlink.classList.toggle('hidden', !(d.origin && /^https:\/\/(www\.)?moxfield\.com\/decks\//.test(d.source || '')));
     const errors = this.checks.issues.filter((i) => i.level === 'error').length;
     const bad = errors || (!this.forge.pending && this.forge.problem); // an older verdict doesn't count while rechecking
     E.status.className = `bd-status ${bad ? 'bad' : 'ok'}`;
@@ -289,6 +293,13 @@ export class Builder {
     this.focus = null;
     this.el.name.value = '';
     this.el.name.focus();
+  }
+
+  /** A Moxfield sync wrote these deck files: an unchanged copy of one of them open here is reloaded. */
+  onDecksChanged(changed) {
+    const o = this.deck.origin;
+    if (!this.mounted || !o || this.deck.dirty) return;
+    if (changed.some((r) => r.src === o.src && r.path === o.name)) this.openDeck(o).then(() => this.afterChange());
   }
 
   async openDeck(ref) {
@@ -339,6 +350,7 @@ export class Builder {
     }
     d.name = name;
     d.origin = { src: d.src, name: path };
+    if (saveAs) d.source = ''; // a copy isn't linked to the Moxfield deck
     d.dirty = false;
     this.decksChanged = true;
     this.el.name.value = name;

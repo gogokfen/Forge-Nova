@@ -1,5 +1,6 @@
 package forge.nova.sync;
 
+import forge.card.mana.ManaAtom;
 import forge.game.GameEntityView;
 import forge.game.GameLogEntry;
 import forge.game.GameView;
@@ -28,6 +29,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Predicate;
 
 /**
@@ -49,6 +51,22 @@ public final class StateSync {
             ZoneType.Library, ZoneType.Sideboard, ZoneType.AttractionDeck, ZoneType.ContraptionDeck
     };
     private static final long FLUSH_DELAY_MS = 20;
+
+    /**
+     * Taken for writing while the host tries out plays in the game to see which cards a player could play
+     * (test payments take mana from the pool and give it back): meanwhile nothing is sent, so no client ever
+     * sees those in-between states. Flushes take it for reading.
+     */
+    private static final ReentrantReadWriteLock SETTLED = new ReentrantReadWriteLock();
+
+    /** Holds every client's updates until {@link #resumeAll()}; the caller must call it (finally). */
+    public static void holdAll() {
+        SETTLED.writeLock().lock();
+    }
+
+    public static void resumeAll() {
+        SETTLED.writeLock().unlock();
+    }
 
     public interface ViewPolicy {
         Collection<PlayerView> localPlayers();
@@ -139,11 +157,17 @@ public final class StateSync {
             try {
                 scheduler.schedule(() -> {
                     scheduled.set(false);
+                    if (!SETTLED.readLock().tryLock()) {
+                        requestFlush(); // the game is being tried out (holdAll): once it's settled again
+                        return;
+                    }
                     try {
                         flush();
                     } catch (Throwable t) {
                         // Views are mutated concurrently by the game thread; just try again shortly.
                         requestFlush();
+                    } finally {
+                        SETTLED.readLock().unlock();
                     }
                 }, FLUSH_DELAY_MS, TimeUnit.MILLISECONDS);
             } catch (RejectedExecutionException shutDownMeanwhile) {
@@ -154,13 +178,23 @@ public final class StateSync {
 
     /** Synchronous flush (before prompts/dialogs, so the client sees the state they refer to). */
     public void flushNow() {
-        for (int attempt = 0; attempt < 3; attempt++) {
-            try {
-                flush();
-                return;
-            } catch (Throwable t) {
-                // concurrent modification from the game thread - retry
+        // during a holdAll() (only the thread holding it can get the lock) the flush follows right after it;
+        // never wait here: the caller may hold game locks
+        if (!SETTLED.readLock().tryLock()) {
+            requestFlush();
+            return;
+        }
+        try {
+            for (int attempt = 0; attempt < 3; attempt++) {
+                try {
+                    flush();
+                    return;
+                } catch (Throwable t) {
+                    // concurrent modification from the game thread - retry
+                }
             }
+        } finally {
+            SETTLED.readLock().unlock();
         }
         requestFlush();
     }
@@ -224,10 +258,10 @@ public final class StateSync {
                 }
                 po.endObj();
             }
-            // mana pool W U B R G C
+            // mana pool W U B R G C (Forge keys colorless by ManaAtom.COLORLESS, not MagicColor's 0)
             po.beginArr("mana");
             po.val(p.getMana((byte) 1)).val(p.getMana((byte) 2)).val(p.getMana((byte) 4))
-              .val(p.getMana((byte) 8)).val(p.getMana((byte) 16)).val(p.getMana((byte) 0));
+              .val(p.getMana((byte) 8)).val(p.getMana((byte) 16)).val(p.getMana((byte) ManaAtom.COLORLESS));
             po.endArr();
             po.put("maxHand", p.hasUnlimitedHandSize() ? -1 : p.getMaxHandSize());
             po.put("lands", p.getNumLandThisTurn());
@@ -307,6 +341,19 @@ public final class StateSync {
                     po.val(c.getId());
                 }
                 po.endArr();
+                // casts from the command zone so far (the commander tax is {2} for each)
+                boolean anyCast = false;
+                for (CardView c : cmdrs) {
+                    int casts = p.getCommanderCast(c);
+                    if (casts > 0) {
+                        if (!anyCast) {
+                            po.beginObj("cmdCast");
+                            anyCast = true;
+                        }
+                        po.put(String.valueOf(c.getId()), casts);
+                    }
+                }
+                if (anyCast) po.endObj();
             }
             policy.writeExtraPlayerInfo(p, po);
             po.putOpt("det", safeDetails(p));

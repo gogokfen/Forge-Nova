@@ -14,6 +14,9 @@ public class StaticAbilityCantPhase {
    }
 
    private static boolean cantPhase(Card card, StaticAbilityMode mode) {
+      if (!StaticAbilityModeRegistry.mayExist(mode)) {
+         return false; // Forge Nova: no static ability of this mode exists anywhere
+      }
       Game game = card.getGame();
 
       for(Card ca : game.getCardsIn((Iterable)ZoneType.STATIC_ABILITIES_SOURCE_ZONES)) {
